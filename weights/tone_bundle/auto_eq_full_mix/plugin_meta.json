@@ -1,0 +1,62 @@
+{
+  "effect_name": "outputs_spectralmaskeq_2026-04-30-18-36-30",
+  "model_id": "outputs_spectralmaskeq_2026-04-30-18-36-30",
+  "architecture": "lstm",
+  "sample_rate": 44100,
+  "channels": 1,
+  "causal": true,
+  "receptive_field": 1,
+  "latency_samples": 0,
+  "num_controls": 0,
+  "stage_kind": "nn+dsp",
+  "controls": [],
+  "state_tensors": [
+    {
+      "name": "root_h",
+      "shape": [
+        2,
+        1,
+        64
+      ],
+      "dtype": "float32"
+    },
+    {
+      "name": "root_c",
+      "shape": [
+        2,
+        1,
+        64
+      ],
+      "dtype": "float32"
+    }
+  ],
+  "input_names": [
+    "audio_in",
+    "root_h_in",
+    "root_c_in"
+  ],
+  "output_names": [
+    "params_proc_0",
+    "root_h_out",
+    "root_c_out"
+  ],
+  "dsp_blocks": [
+    {
+      "kind": "spectral_mask_eq",
+      "name": "processor.processors.0",
+      "params": {
+        "sample_rate": 44100,
+        "block_size": 128,
+        "num_control_params": 32,
+        "n_fft": 1024,
+        "hop": 512,
+        "n_bands": 32,
+        "min_gain_db": -18.0,
+        "max_gain_db": 18.0,
+        "f_min": 30.0,
+        "f_max": 22050.0
+      }
+    }
+  ],
+  "schema_version": 2
+}

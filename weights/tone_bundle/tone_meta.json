@@ -1,0 +1,279 @@
+{
+  "schema_version": 2,
+  "effect_name": "NeuralMastering",
+  "model_id": "nm__outputs_lstm_2026-04-24-20-10-16__outputs_staticrationalnonlinearity_2026-04-25-10-32-20__outputs_parametriceq_2026-04-28-16-43-37_outputs_parametriceq_2026-04-28-19-51-35_outputs_parametriceq_2026-04-29-02-06-34_outputs_parametriceq_2026-04-28-22-59-07_outputs_parametriceq_2026-04-28-13-35-26",
+  "sample_rate": 44100,
+  "channels": 1,
+  "sub_bundles": {
+    "saturator": "saturator",
+    "la2a": "la2a"
+  },
+  "auto_eq": {
+    "default_class": "full_mix",
+    "classes": {
+      "bass": "auto_eq_bass",
+      "drums": "auto_eq_drums",
+      "vocals": "auto_eq_vocals",
+      "other": "auto_eq_other",
+      "full_mix": "auto_eq_full_mix"
+    },
+    "class_order": [
+      "bass",
+      "drums",
+      "vocals",
+      "other",
+      "full_mix"
+    ]
+  },
+  "controls": {
+    "LVL": {
+      "id": "LVL",
+      "name": "Leveler",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "LVT": {
+      "id": "LVT",
+      "name": "Lev Target",
+      "min": -36.0,
+      "max": -6.0,
+      "default": -14.0,
+      "skew": 1.0,
+      "unit": "LUFS"
+    },
+    "SDR": {
+      "id": "SDR",
+      "name": "Sat Drive",
+      "min": 0.0,
+      "max": 24.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "SVO": {
+      "id": "SVO",
+      "name": "Sat Output",
+      "min": -24.0,
+      "max": 12.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "SMX": {
+      "id": "SMX",
+      "name": "Sat Mix",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "SHF": {
+      "id": "SHF",
+      "name": "Sat HPF",
+      "min": 20.0,
+      "max": 500.0,
+      "default": 20.0,
+      "skew": 1.0,
+      "unit": "Hz"
+    },
+    "STH": {
+      "id": "STH",
+      "name": "Sat Thresh",
+      "min": -24.0,
+      "max": 0.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "SBS": {
+      "id": "SBS",
+      "name": "Sat Bias",
+      "min": -0.5,
+      "max": 0.5,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "C_L": {
+      "id": "C_L",
+      "name": "Comp/Limit",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 1.0,
+      "skew": 1.0,
+      "unit": "switch"
+    },
+    "CMP": {
+      "id": "CMP",
+      "name": "Peak Reduction",
+      "min": 0.0,
+      "max": 100.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "CLS": {
+      "id": "CLS",
+      "name": "EQ Class",
+      "min": 0.0,
+      "max": 4.0,
+      "default": 4.0,
+      "skew": 1.0,
+      "unit": "enum"
+    },
+    "EQ": {
+      "id": "EQ",
+      "name": "Auto EQ",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "EQR": {
+      "id": "EQR",
+      "name": "EQ Range",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 1.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "EQS": {
+      "id": "EQS",
+      "name": "EQ Speed",
+      "min": 10.0,
+      "max": 500.0,
+      "default": 100.0,
+      "skew": 1.0,
+      "unit": "ms"
+    },
+    "EQ0": {
+      "id": "EQ0",
+      "name": "EQ Low Shelf",
+      "min": -9.0,
+      "max": 9.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "EQ1": {
+      "id": "EQ1",
+      "name": "EQ 110 Hz",
+      "min": -9.0,
+      "max": 9.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "EQ2": {
+      "id": "EQ2",
+      "name": "EQ 1.1 kHz",
+      "min": -9.0,
+      "max": 9.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "EQ3": {
+      "id": "EQ3",
+      "name": "EQ 7 kHz",
+      "min": -9.0,
+      "max": 9.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "EQ4": {
+      "id": "EQ4",
+      "name": "EQ High Shelf",
+      "min": -9.0,
+      "max": 9.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    },
+    "OLV": {
+      "id": "OLV",
+      "name": "Out Leveler",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "OLT": {
+      "id": "OLT",
+      "name": "Out Lev Target",
+      "min": -36.0,
+      "max": -6.0,
+      "default": -14.0,
+      "skew": 1.0,
+      "unit": "LUFS"
+    },
+    "SPW": {
+      "id": "SPW",
+      "name": "Spatial Wet",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "SPR": {
+      "id": "SPR",
+      "name": "Spatial Rate",
+      "min": 0.1,
+      "max": 2.0,
+      "default": 0.8,
+      "skew": 1.0,
+      "unit": "Hz"
+    },
+    "SPD": {
+      "id": "SPD",
+      "name": "Spatial Depth",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "TRM": {
+      "id": "TRM",
+      "name": "Output Trim",
+      "min": -12.0,
+      "max": 12.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": "dB"
+    }
+  },
+  "amount_mapping": {
+    "saturator": {
+      "pre_gain_db_max": 12.0,
+      "post_gain_db_max": -12.0,
+      "wet_mix_max": 1.0
+    },
+    "la2a": {
+      "peak_reduction_min": 20.0,
+      "peak_reduction_max": 70.0,
+      "comp_or_limit": 1.0
+    },
+    "auto_eq": {
+      "wet_mix_max": 1.0
+    }
+  },
+  "leveler": {
+    "target_lufs": -14.0
+  },
+  "ceiling": {
+    "ceiling_dbtp": -1.0,
+    "lookahead_ms": 1.5,
+    "attack_ms": 0.5,
+    "release_ms": 50.0
+  }
+}

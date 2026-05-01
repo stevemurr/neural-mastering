@@ -1,0 +1,46 @@
+# TONE stage 2 — auto-EQ toward brown-noise spectrum.
+#
+# Single dynamic ParametricEQ driven by the built-in DynamicController
+# (LSTM over pooled input). The EQ is locked to 5 fixed band frequencies
+# (low_shelf, 3 peakings, high_shelf) via freeze_freqs=true, so the network
+# only predicts gain + Q per band — dramatically tighter training.
+#
+# Train target: PluginDataset pairs (dry music, brown-noise-EQ'd music)
+# built by scripts/prepare_auto_eq_data.py.
+
+_target_: nablafx.GreyBoxSystem
+lr: 0.01
+use_callbacks: true
+log_media_every_n_steps: 2000
+model:
+  _target_: nablafx.GreyBoxModel
+  processors:
+  - _target_: nablafx.processors.ParametricEQ
+    sample_rate: 44100
+    min_gain_db: -9.0
+    max_gain_db: 9.0
+    min_q_factor: 0.5
+    max_q_factor: 2.0
+    block_size: 128
+    control_type: dynamic
+    freeze_freqs: true
+  num_controls: 0
+  stat_control_params_initial: rnd
+  stat_cond_num_layers: 3
+  stat_cond_hidden_dim: 16
+  dyn_block_size: 128
+  dyn_num_layers: 1
+  dyn_cond_block_size: 128
+  dyn_cond_num_layers: 1
+loss:
+  _target_: nablafx.evaluation.FlexibleLoss
+  losses:
+  - name: l1_loss
+    weight: 0.3
+    alias: l1
+  - name: mrstft_loss
+    weight: 0.6
+    alias: mrstft
+  - name: brown_spectrum_loss
+    weight: 0.1
+    alias: brown

@@ -1,0 +1,11 @@
+_target_: nablafx.data.DryWetFilesPluginDataModule
+root_dir_dry: ${dataset_root}/tone_auto_eq/DRY/test
+root_dir_wet: ${dataset_root}/tone_auto_eq/WET/test
+params_idxs_to_use: null
+data_to_use: 1.0
+trainval_split: 0.9  # unused for test
+sample_length: 132300
+sample_rate: 44100
+preload: false
+batch_size: 4
+num_workers: 2

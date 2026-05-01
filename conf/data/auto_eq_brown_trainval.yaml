@@ -1,0 +1,13 @@
+_target_: nablafx.data.DryWetFilesPluginDataModule
+root_dir_dry: ${dataset_root}/tone_auto_eq/DRY/trainval
+root_dir_wet: ${dataset_root}/tone_auto_eq/WET/trainval
+# Non-parametric — the target is already computed; controller maps dry -> EQ.
+params_idxs_to_use: null
+data_to_use: 1.0
+trainval_split: 0.9
+sample_length: 132300  # 3.0 s @ 44.1 kHz — enough for mel analysis windows
+sample_rate: 44100
+preload: true
+batch_size: 32
+num_workers: 4
+persistent_workers: true

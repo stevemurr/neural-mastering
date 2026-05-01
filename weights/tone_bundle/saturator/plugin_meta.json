@@ -1,0 +1,42 @@
+{
+  "effect_name": "outputs_staticrationalnonlinearity_2026-04-25-10-32-20",
+  "model_id": "outputs_staticrationalnonlinearity_2026-04-25-10-32-20",
+  "architecture": "dsp",
+  "sample_rate": 44100,
+  "channels": 1,
+  "causal": true,
+  "receptive_field": 1,
+  "latency_samples": 0,
+  "num_controls": 0,
+  "stage_kind": "dsp",
+  "controls": [],
+  "state_tensors": [],
+  "input_names": [],
+  "output_names": [],
+  "dsp_blocks": [
+    {
+      "kind": "rational_a",
+      "name": "processor.processors.0",
+      "params": {
+        "version": "A",
+        "numerator": [
+          5.014246085011109e-07,
+          3.4951839447021484,
+          -9.277632102566713e-07,
+          3.858473539352417,
+          -7.840228022359952e-08,
+          0.9341245889663696,
+          -2.7553147674552747e-07
+        ],
+        "denominator": [
+          1.658664345741272,
+          2.483762741088867,
+          1.050411581993103,
+          -8.716301067579479e-07,
+          2.0789926052093506
+        ]
+      }
+    }
+  ],
+  "schema_version": 2
+}

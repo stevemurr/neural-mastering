@@ -1,0 +1,23 @@
+[project]
+name = "neural-mastering"
+version = "0.1.0"
+description = "Adaptive mastering chain — auto-EQ + saturator + LA-2A + leveler + ceiling, packaged as a CLAP plugin. Built on nablafx."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Steven Murr", email = "codec01_sedan@icloud.com"},
+]
+
+dependencies = [
+    # nablafx is consumed via our fork — pin a commit SHA so the export pipeline
+    # and runtime model classes stay in sync.
+    "nablafx @ git+https://github.com/stevemurr/nablafx.git@1f1f49b951d961ccb64545540d005f6776269f6e",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["neural_mastering*"]

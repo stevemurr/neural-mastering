@@ -1,0 +1,50 @@
+# TONE stage 2 — auto-EQ toward an empirical per-class target spectrum
+# (Neutron-style instrument preset).
+#
+# Same architecture as the brown-noise variant: single dynamic ParametricEQ
+# driven by the built-in DynamicController (LSTM), 5 frozen band frequencies,
+# the network only predicts gain + Q per band.
+#
+# Difference from the brown variant: drops `brown_spectrum_loss` — the wet
+# target encodes the desired empirical spectrum directly, so MRSTFT against
+# the wet target is the actual shape signal. Re-weights l1 + mrstft to sum
+# to 1.0.
+#
+# Train target: PluginDataset pairs (dry stem, EmpiricalTargetEQ'd stem)
+# built by scripts/prepare_auto_eq_data.py --musdb --target-class <class>.
+# Use one data config per class:
+#   conf/data/auto_eq_musdb_<class>_{trainval,test}.yaml
+
+_target_: nablafx.GreyBoxSystem
+lr: 0.01
+use_callbacks: true
+log_media_every_n_steps: 2000
+model:
+  _target_: nablafx.GreyBoxModel
+  processors:
+  - _target_: nablafx.processors.ParametricEQ
+    sample_rate: 44100
+    min_gain_db: -9.0
+    max_gain_db: 9.0
+    min_q_factor: 0.5
+    max_q_factor: 2.0
+    block_size: 128
+    control_type: dynamic
+    freeze_freqs: true
+  num_controls: 0
+  stat_control_params_initial: rnd
+  stat_cond_num_layers: 3
+  stat_cond_hidden_dim: 16
+  dyn_block_size: 128
+  dyn_num_layers: 1
+  dyn_cond_block_size: 128
+  dyn_cond_num_layers: 1
+loss:
+  _target_: nablafx.evaluation.FlexibleLoss
+  losses:
+  - name: l1_loss
+    weight: 0.33
+    alias: l1
+  - name: mrstft_loss
+    weight: 0.67
+    alias: mrstft

@@ -1,0 +1,50 @@
+# TONE stage 2 — auto-EQ toward an empirical per-class target spectrum,
+# driven by a SpectralDynamicController instead of a peak-only DynamicController.
+#
+# Why: the original DynamicController feeds the LSTM a single scalar per block
+# (max(|x|) over 128 samples), which throws away all spectral information.
+# That collapses the model to outputting the conditional-mean correction
+# regardless of input material. SpectralDynamicController replaces the peak
+# pool with a Hann-windowed rfft + linear projection so the LSTM sees the
+# spectral content of each block.
+#
+# Architecture: 65-bin log-magnitude rfft -> Linear(65->32) -> LSTM(32, 64,
+# layers=2) -> Linear(64->15) -> Sigmoid. Same `block_size=128` and
+# `freeze_freqs=True` as the peak variant — required for export-compatibility
+# with the C++ TONE plugin.
+
+_target_: nablafx.GreyBoxSystem
+lr: 0.01
+use_callbacks: true
+log_media_every_n_steps: 2000
+model:
+  _target_: nablafx.GreyBoxModel
+  processors:
+  - _target_: nablafx.processors.ParametricEQ
+    sample_rate: 44100
+    min_gain_db: -9.0
+    max_gain_db: 9.0
+    min_q_factor: 0.5
+    max_q_factor: 2.0
+    block_size: 128
+    control_type: dynamic-spectral
+    freeze_freqs: true
+  num_controls: 0
+  stat_control_params_initial: rnd
+  stat_cond_num_layers: 3
+  stat_cond_hidden_dim: 16
+  dyn_block_size: 128
+  dyn_num_layers: 2
+  dyn_cond_block_size: 128
+  dyn_cond_num_layers: 1
+  dyn_spectral_hidden_dim: 64
+  dyn_spectral_feat_dim: 32
+loss:
+  _target_: nablafx.evaluation.FlexibleLoss
+  losses:
+  - name: l1_loss
+    weight: 0.33
+    alias: l1
+  - name: mrstft_loss
+    weight: 0.67
+    alias: mrstft

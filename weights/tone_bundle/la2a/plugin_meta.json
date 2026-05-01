@@ -1,0 +1,87 @@
+{
+  "effect_name": "Teletronix LA-2A",
+  "model_id": "outputs_lstm_2026-04-24-20-10-16",
+  "architecture": "lstm",
+  "sample_rate": 44100,
+  "channels": 1,
+  "causal": true,
+  "receptive_field": 1,
+  "latency_samples": 0,
+  "num_controls": 2,
+  "stage_kind": "nn",
+  "controls": [
+    {
+      "id": "C",
+      "name": "Comp/Limit",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 1.0,
+      "skew": 1.0,
+      "unit": "switch"
+    },
+    {
+      "id": "P",
+      "name": "Peak Reduction",
+      "min": 0.0,
+      "max": 100.0,
+      "default": 50.0,
+      "skew": 1.0,
+      "unit": ""
+    }
+  ],
+  "state_tensors": [
+    {
+      "name": "processor_h",
+      "shape": [
+        1,
+        1,
+        32
+      ],
+      "dtype": "float32"
+    },
+    {
+      "name": "processor_c",
+      "shape": [
+        1,
+        1,
+        32
+      ],
+      "dtype": "float32"
+    },
+    {
+      "name": "processor_cond_nn_h",
+      "shape": [
+        1,
+        1,
+        16
+      ],
+      "dtype": "float32"
+    },
+    {
+      "name": "processor_cond_nn_c",
+      "shape": [
+        1,
+        1,
+        16
+      ],
+      "dtype": "float32"
+    }
+  ],
+  "input_names": [
+    "audio_in",
+    "controls",
+    "processor_h_in",
+    "processor_c_in",
+    "processor_cond_nn_h_in",
+    "processor_cond_nn_c_in"
+  ],
+  "output_names": [
+    "audio_out",
+    "processor_h_out",
+    "processor_c_out",
+    "processor_cond_nn_h_out",
+    "processor_cond_nn_c_out"
+  ],
+  "dsp_blocks": [],
+  "schema_version": 2
+}

@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+native/clap/build/
+*.so
+*.dylib
+*.clap
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Hydra / training outputs
+outputs/
+artifacts/
+multirun/
+wandb/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local-only weights too big for git (we keep tone_bundle/ but not arbitrary checkpoints)
+*.ckpt
+*.pt
+!weights/static_*.pt

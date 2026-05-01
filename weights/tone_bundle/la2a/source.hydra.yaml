@@ -1,0 +1,145 @@
+mode: fit
+ckpt_path: null
+compile: false
+dataset_root: /shared/datasets
+data:
+  _target_: nablafx.data.DryWetFilesPluginDataModule
+  root_dir_dry: ${dataset_root}/SignalTrain_LA2A-nablafx/DRY/trainval
+  root_dir_wet: ${dataset_root}/SignalTrain_LA2A-nablafx/LA2A-CompLimiter/trainval
+  params_idxs_to_use:
+  - 0
+  - 1
+  data_to_use: 1.0
+  trainval_split: 0.9
+  sample_length: 132300
+  sample_rate: 44100
+  preload: true
+  batch_size: 64
+  num_workers: 12
+  persistent_workers: true
+  prefetch_factor: 4
+model:
+  _target_: nablafx.BlackBoxSystemWithTBPTT
+  lr: 0.001
+  log_media_every_n_steps: 90000
+  step_num_samples: 4800
+  model:
+    _target_: nablafx.BlackBoxModel
+    processor:
+      _target_: nablafx.processors.lstm.LSTM
+      num_inputs: 1
+      num_outputs: 1
+      num_controls: 2
+      hidden_size: 32
+      num_layers: 1
+      residual: false
+      direct_path: false
+      cond_type: tvcond
+      cond_block_size: 128
+      cond_num_layers: 1
+  loss:
+    _target_: nablafx.evaluation.FlexibleLoss
+    losses:
+    - name: l1_loss
+      weight: 0.5
+      alias: l1
+    - name: mrstft_loss
+      weight: 0.5
+      alias: mrstft
+trainer:
+  logger:
+    _target_: lightning.pytorch.loggers.CSVLogger
+    save_dir: ${hydra:runtime.output_dir}
+    name: logs
+  callbacks:
+    audio:
+      _target_: nablafx.callbacks.AudioLoggingCallback
+      log_every_n_steps: 3000
+      sample_rate: 48000
+      max_samples_per_batch: 3
+      log_test_batches: 10
+      log_input_target_once: true
+    metrics:
+      _target_: nablafx.callbacks.MetricsLoggingCallback
+      log_on_step: false
+      log_on_epoch: true
+      sync_dist: true
+      prefix: metric
+      metrics:
+      - name: l1_loss
+        alias: l1
+      - name: mape_loss
+        alias: mape
+      - name: mse_loss
+        alias: mse
+      - name: smooth_l1_loss
+        alias: smooth_l1
+      - name: huber_loss
+        alias: huber
+      - name: esr_loss
+        alias: esr
+      - name: dc_loss
+        alias: dc
+      - name: si_sdr_loss
+        alias: si_sdr
+      - name: snr_metric
+        alias: snr
+      - name: thd_metric
+        alias: thd
+      - name: cosine_similarity_loss
+        alias: cosine_similarity
+      - name: log_cosh_loss
+        alias: log_cosh
+      - name: stft_loss
+        alias: stft
+      - name: mrstft_loss
+        alias: mrstft
+      - name: melstft_loss
+        alias: melstft
+        params:
+          sample_rate: 48000
+      - name: random_stft_loss
+        alias: random_stft
+      - name: edc_loss
+        alias: edc
+      - name: spectral_centroid_loss
+        alias: spectral_centroid
+      - name: spectral_rolloff_loss
+        alias: spectral_rolloff
+      - name: a_weighting_loss
+        alias: a_weighting
+      - name: zero_crossing_rate_metric
+        alias: zero_crossing_rate
+    checkpoint:
+      _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      dirpath: ${hydra:runtime.output_dir}/checkpoints
+      save_last: true
+      save_top_k: 1
+      monitor: loss/val/tot
+      every_n_train_steps: 100
+      filename: '{epoch}-{step}'
+    early_stopping:
+      _target_: lightning.pytorch.callbacks.EarlyStopping
+      monitor: loss/val/tot
+      patience: 50
+    lr_monitor:
+      _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    model_summary:
+      _target_: lightning.pytorch.callbacks.ModelSummary
+      max_depth: 2
+    console_progress:
+      _target_: nablafx.callbacks.ConsoleProgressCallback
+      every_n_steps: 50
+  _target_: lightning.Trainer
+  accelerator: gpu
+  devices: 1
+  precision: bf16-mixed
+  gradient_clip_val: null
+  max_steps: 451000
+  num_sanity_val_steps: 2
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 100
+  sync_batchnorm: false
+  enable_model_summary: true
+  enable_checkpointing: true
+  benchmark: true

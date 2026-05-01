@@ -1,0 +1,46 @@
+# TONE auto-EQ via STFT-domain magnitude mask (32 mel-spaced bands).
+#
+# Replaces ParametricEQ (5 fixed-Q biquads) with SpectralMaskEQ (32-band
+# overlap-add FFT mask). The C++ runtime mirrors this with Apple Accelerate
+# vDSP_fft + the same mel band layout. Drives with the same
+# SpectralDynamicController used elsewhere; controller hidden_dim=64 unchanged
+# but output dim is now 32 instead of 15.
+#
+# Train target: PluginDataset pairs (dry stem, EmpiricalTargetEQ'd stem)
+# built by scripts/prepare_auto_eq_data.py --musdb --augment-pre-eq.
+
+_target_: nablafx.GreyBoxSystem
+lr: 0.01
+use_callbacks: true
+log_media_every_n_steps: 2000
+model:
+  _target_: nablafx.GreyBoxModel
+  processors:
+  - _target_: nablafx.processors.SpectralMaskEQ
+    sample_rate: 44100
+    n_bands: 32
+    n_fft: 1024
+    hop: 512
+    min_gain_db: -18.0
+    max_gain_db: 18.0
+    block_size: 128
+    control_type: dynamic-spectral
+  num_controls: 0
+  stat_control_params_initial: rnd
+  stat_cond_num_layers: 3
+  stat_cond_hidden_dim: 16
+  dyn_block_size: 128
+  dyn_num_layers: 2
+  dyn_cond_block_size: 128
+  dyn_cond_num_layers: 1
+  dyn_spectral_hidden_dim: 64
+  dyn_spectral_feat_dim: 32
+loss:
+  _target_: nablafx.evaluation.FlexibleLoss
+  losses:
+  - name: l1_loss
+    weight: 0.33
+    alias: l1
+  - name: mrstft_loss
+    weight: 0.67
+    alias: mrstft

@@ -1,0 +1,47 @@
+# TONE auto-EQ via STFT-domain magnitude mask, finer-grained variant.
+#
+# Same SpectralMaskEQ + SpectralDynamicController architecture as
+# model_gb_tone_auto_eq_spectral_mask_musdb.d.yaml but with:
+#   * n_fft = 2048 (was 1024) — halves LF bin spacing from 43 Hz → 21.5 Hz
+#   * hop   = 1024 (was 512)  — keeps 50% overlap, ~23 ms latency
+#   * n_bands = 64 (was 32)   — denser mel coverage, ~7 bands per octave
+#
+# Controller hidden_dim stays 64; only the output head widens (64→64 instead
+# of 64→32). The C++ runtime reads n_fft / hop / n_bands from the exported
+# plugin_meta.json and adapts buffer sizes / mel filterbank automatically.
+
+_target_: nablafx.GreyBoxSystem
+lr: 0.01
+use_callbacks: true
+log_media_every_n_steps: 2000
+model:
+  _target_: nablafx.GreyBoxModel
+  processors:
+  - _target_: nablafx.processors.SpectralMaskEQ
+    sample_rate: 44100
+    n_bands: 64
+    n_fft: 2048
+    hop: 1024
+    min_gain_db: -18.0
+    max_gain_db: 18.0
+    block_size: 128
+    control_type: dynamic-spectral
+  num_controls: 0
+  stat_control_params_initial: rnd
+  stat_cond_num_layers: 3
+  stat_cond_hidden_dim: 16
+  dyn_block_size: 128
+  dyn_num_layers: 2
+  dyn_cond_block_size: 128
+  dyn_cond_num_layers: 1
+  dyn_spectral_hidden_dim: 64
+  dyn_spectral_feat_dim: 32
+loss:
+  _target_: nablafx.evaluation.FlexibleLoss
+  losses:
+  - name: l1_loss
+    weight: 0.33
+    alias: mrstft
+  - name: mrstft_loss
+    weight: 0.67
+    alias: l1
