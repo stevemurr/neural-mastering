@@ -28,11 +28,11 @@ model:
       num_outputs: 1
       num_controls: 0
       num_blocks: 10
-      kernel_size: 3
+      kernel_size: 11
       dilation_growth: 2
-      channel_width: 16
+      channel_width: 32
       channel_growth: 1
-      stack_size: 1
+      stack_size: 10
       groups: 1
       bias: true
       causal: true
@@ -143,7 +143,7 @@ trainer:
   precision: 32-true
   gradient_clip_val: 1.0
   gradient_clip_algorithm: norm
-  max_steps: 2000
+  max_steps: 4000
   num_sanity_val_steps: 2
   check_val_every_n_epoch: 1
   log_every_n_steps: 100

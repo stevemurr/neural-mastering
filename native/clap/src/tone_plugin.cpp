@@ -552,6 +552,14 @@ struct ChannelChain {
     float sat_hpf_b0{0.f}, sat_hpf_b1{0.f}, sat_hpf_a1{0.f};
     float sat_hpf_x1{0.f}, sat_hpf_y1{0.f};
     std::unique_ptr<OrtMiniSession>        la2a_ort;
+    // Ring buffer used when the compressor bundle is a stateless model (e.g.
+    // long-RF causal TCN) that must be called with `trace_len` samples per
+    // ORT call. Sized to la2a_meta.trace_len at activate; left empty for
+    // stateful bundles (LSTM with hidden state — those use the per-block
+    // path and don't need the ring).
+    std::vector<float>                     la2a_in_ring;
+    std::vector<float>                     la2a_out_buf;
+    int                                    la2a_in_fill{0};
     TruePeakCeiling                        ceiling;
 
     // EMA-smoothed LSTM output params [0,1] — 15 channels, neutral at 0.5.
@@ -888,6 +896,20 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
                 + "/model.onnx",
             g_state->la2a_meta);
 
+        // Stateless bundle (e.g. long-RF causal TCN): allocate a trace_len
+        // input ring and an output buffer. The compressor stage shifts the
+        // ring by kBlockSize per call, runs ORT against the full ring, and
+        // copies the trailing kBlockSize samples of the output as the new
+        // wet block. Stateful bundles (LSTM with hidden state) leave the
+        // ring empty and use the per-block path.
+        const bool stateless_comp = g_state->la2a_meta.state_tensors.empty();
+        if (stateless_comp && g_state->la2a_meta.trace_len > 0) {
+            const int N = g_state->la2a_meta.trace_len;
+            ch.la2a_in_ring.assign(N, 0.0f);
+            ch.la2a_out_buf.assign(N, 0.0f);
+            ch.la2a_in_fill = 0;
+        }
+
         TruePeakCeiling::Config tcfg{
             /*ceiling_dbtp=*/g_state->tone_meta.ceiling.ceiling_dbtp,
             /*lookahead_ms=*/g_state->tone_meta.ceiling.lookahead_ms,
@@ -1208,20 +1230,51 @@ void flush_chain_block_(Plugin& plug,
         }
 
         case StageID::Compressor: {
-            // Read control count from meta so the slot accepts either the
-            // LA-2A-style 2-control ONNX (Comp/Limit + Peak Reduction) or a
-            // 0-control fixed-setting bundle (e.g. the SSL bus comp v1).
+            // Two call modes depending on bundle:
+            //   * Stateful (LSTM): per-block path, ORT receives kBlockSize
+            //     samples and carries context via hidden state.
+            //   * Stateless (TCN with long RF): windowed path, the channel
+            //     keeps a `trace_len` ring; per kBlockSize call the ring
+            //     shifts, ORT receives the whole ring, and the trailing
+            //     kBlockSize samples of output are the new wet block.
             std::array<float,2> la2a_ctl{amt.la2a_comp_or_limit,amt.la2a_pr_norm};
             const int n_ctl = g_state->la2a_meta.num_controls;
             const float* ctl_ptr = (n_ctl > 0) ? la2a_ctl.data() : nullptr;
+            const int trace_len = g_state->la2a_meta.trace_len;
+            const bool windowed = !plug.chains[0].la2a_in_ring.empty();
             float* ch_buf[2]={work_l,work_r};
             for (uint32_t ch=0;ch<n_ch;++ch) {
                 float* blk=ch_buf[ch];
                 std::copy_n(blk,kBlockSize,dry.data());
-                plug.chains[ch].la2a_ort->run(blk,kBlockSize,
-                    wet_a.data(),kBlockSize,
-                    ctl_ptr,n_ctl,"audio_out");
-                plug.chains[ch].la2a_ort->swap_state();
+
+                if (windowed) {
+                    auto& ring  = plug.chains[ch].la2a_in_ring;
+                    auto& obuf  = plug.chains[ch].la2a_out_buf;
+                    const int N = trace_len;
+                    // Shift ring left by kBlockSize and append the new block at
+                    // the end. (Memmove-based shift; N is bounded so this is
+                    // cheap. A circular indexing scheme would save the memmove
+                    // but complicates the contiguous-buffer requirement of the
+                    // ORT input tensor.)
+                    std::memmove(ring.data(),
+                                 ring.data() + kBlockSize,
+                                 (N - kBlockSize) * sizeof(float));
+                    std::copy_n(blk, kBlockSize, ring.data() + N - kBlockSize);
+
+                    plug.chains[ch].la2a_ort->run(ring.data(), N,
+                        obuf.data(), N,
+                        ctl_ptr, n_ctl, "audio_out");
+                    // Causal TCN: output[N-128..N-1] is the answer for the
+                    // most recent kBlockSize input samples (sample-aligned, no
+                    // added algorithmic latency once the ring has filled).
+                    std::copy_n(obuf.data() + N - kBlockSize, kBlockSize,
+                                wet_a.data());
+                } else {
+                    plug.chains[ch].la2a_ort->run(blk, kBlockSize,
+                        wet_a.data(), kBlockSize,
+                        ctl_ptr, n_ctl, "audio_out");
+                    plug.chains[ch].la2a_ort->swap_state();
+                }
                 blend_inplace_(wet_a.data(),dry.data(),1.f-amt.la2a_wet,kBlockSize);
                 std::copy_n(wet_a.data(),kBlockSize,blk);
             }

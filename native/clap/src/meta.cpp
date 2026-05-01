@@ -111,6 +111,7 @@ PluginMeta load_meta(const std::string& path) {
     m.receptive_field = j.at("receptive_field").get<int>();
     m.latency_samples = j.at("latency_samples").get<int>();
     m.num_controls    = j.at("num_controls").get<int>();
+    m.trace_len       = j.value("trace_len", 0);   // 0 for legacy bundles
 
     // schema_v1 had no stage_kind — every v1 bundle is a single-ONNX black-box.
     if (m.schema_version >= 2) {

@@ -98,6 +98,12 @@ struct PluginMeta {
     int                       receptive_field{};
     int                       latency_samples{};
     int                       num_controls{};
+    // Fixed audio_in length the ONNX was traced at. Stateless models that
+    // need RF samples of context per call (e.g. long-RF causal TCN) advertise
+    // their trace length here; the host must call run() with exactly this
+    // many samples and use a ring buffer to feed older context. 0 = legacy
+    // bundle predating this field; treat audio_in as variable-length.
+    int                       trace_len{0};
     StageKind                 stage_kind{StageKind::Nn};
     std::vector<ControlSpec>  controls;
     std::vector<StateSpec>    state_tensors;
