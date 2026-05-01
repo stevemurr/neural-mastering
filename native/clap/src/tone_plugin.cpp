@@ -80,6 +80,12 @@ using nablafx::param_id_for;
 // ONNX bundles at the new block size.
 constexpr int kBlockSize  = 128;
 constexpr int kNumStages  = 7;
+// SSL bus comp accumulator size — must be a multiple of kBlockSize. Larger
+// values cut CPU proportionally (1 ORT call per kSslHop samples instead of
+// 1 per kBlockSize) at the cost of (kSslHop - kBlockSize) extra latency.
+// 1024 = 8 host blocks ≈ 20 ms added latency; 8× CPU reduction vs running
+// per kBlockSize.
+constexpr int kSslHop     = 1024;
 
 enum class StageID : int {
     InputLeveler  = 0,
@@ -563,8 +569,19 @@ struct ChannelChain {
     // only when the ssl_comp sub-bundle is shipped; otherwise null and the
     // SslComp stage is a passthrough.
     std::unique_ptr<OrtMiniSession>        ssl_comp_ort;
-    std::vector<float>                     ssl_comp_in_ring;
-    std::vector<float>                     ssl_comp_out_buf;
+    std::vector<float>                     ssl_comp_in_ring;     // [trace_len]
+    std::vector<float>                     ssl_comp_out_buf;     // [trace_len]
+    // Hop accumulation: re-running the full TCN forward pass every
+    // kBlockSize=128 samples blows the audio thread's deadline at long RF.
+    // Accumulate kSslHop input samples, then run ORT once and play out the
+    // resulting kSslHop samples over (kSslHop / kBlockSize) host calls. The
+    // model still sees trace_len of context per call; we just call it less
+    // often. Adds (kSslHop - kBlockSize) samples of latency.
+    std::vector<float>                     ssl_comp_in_accum;    // [kSslHop]
+    int                                    ssl_comp_in_fill{0};
+    std::vector<float>                     ssl_comp_out_queue;   // [kSslHop]
+    int                                    ssl_comp_out_avail{0};
+    int                                    ssl_comp_out_read{0};
     TruePeakCeiling                        ceiling;
 
     // EMA-smoothed LSTM output params [0,1] — 15 channels, neutral at 0.5.
@@ -910,6 +927,11 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
             const int N = g_state->ssl_comp_meta.trace_len;
             ch.ssl_comp_in_ring.assign(N, 0.0f);
             ch.ssl_comp_out_buf.assign(N, 0.0f);
+            ch.ssl_comp_in_accum.assign(kSslHop, 0.0f);
+            ch.ssl_comp_in_fill = 0;
+            ch.ssl_comp_out_queue.assign(kSslHop, 0.0f);
+            ch.ssl_comp_out_avail = 0;
+            ch.ssl_comp_out_read = 0;
         }
 
         TruePeakCeiling::Config tcfg{
@@ -1254,16 +1276,18 @@ void flush_chain_block_(Plugin& plug,
         }
 
         case StageID::SslComp: {
-            // SSL-style bus comp: stateless long-RF causal TCN, windowed-call
-            // mode. Per kBlockSize input the channel's trace_len ring shifts
-            // left, the new block is appended at the tail, and the trailing
-            // kBlockSize samples of the ORT output become the new wet (no
-            // added algorithmic latency once the ring has filled — there's a
-            // ~trace_len-sample warm-up after activation while the ring fills
-            // with real input).
+            // SSL-style bus comp: stateless long-RF causal TCN.
             //
-            // Skipped if the SSL bundle wasn't shipped (sub_bundles.ssl_comp
-            // absent → ssl_comp_ort is null → stage is a passthrough).
+            // The full forward pass is too expensive to run on every host
+            // kBlockSize call (~1 GMAC per call at our model size), so we
+            // accumulate kSslHop samples between ORT invocations and play out
+            // the resulting kSslHop-sample output queue over (kSslHop /
+            // kBlockSize) host calls. CPU drops by that factor; latency rises
+            // by (kSslHop - kBlockSize) samples on top of the ring's
+            // trace_len-sample warm-up.
+            //
+            // Skipped if the SSL bundle wasn't shipped (ssl_comp_ort null) or
+            // the wet mix is at zero.
             if (amt.ssl_comp_wet <= 0.f) break;
             if (!plug.chains[0].ssl_comp_ort) break;
             const int N = g_state->ssl_comp_meta.trace_len;
@@ -1272,18 +1296,50 @@ void flush_chain_block_(Plugin& plug,
                 float* blk=ch_buf[ch];
                 std::copy_n(blk,kBlockSize,dry.data());
 
-                auto& ring = plug.chains[ch].ssl_comp_in_ring;
-                auto& obuf = plug.chains[ch].ssl_comp_out_buf;
-                std::memmove(ring.data(),
-                             ring.data() + kBlockSize,
-                             (N - kBlockSize) * sizeof(float));
-                std::copy_n(blk, kBlockSize, ring.data() + N - kBlockSize);
+                auto& accum  = plug.chains[ch].ssl_comp_in_accum;
+                auto& ring   = plug.chains[ch].ssl_comp_in_ring;
+                auto& obuf   = plug.chains[ch].ssl_comp_out_buf;
+                auto& outq   = plug.chains[ch].ssl_comp_out_queue;
+                int&  fill   = plug.chains[ch].ssl_comp_in_fill;
+                int&  avail  = plug.chains[ch].ssl_comp_out_avail;
+                int&  rd     = plug.chains[ch].ssl_comp_out_read;
 
-                plug.chains[ch].ssl_comp_ort->run(ring.data(), N,
-                    obuf.data(), N,
-                    nullptr, 0, "audio_out");
-                std::copy_n(obuf.data() + N - kBlockSize, kBlockSize,
-                            wet_a.data());
+                // Push input into the hop-sized accumulator.
+                std::copy_n(blk, kBlockSize, accum.data() + fill);
+                fill += kBlockSize;
+
+                // When the accumulator fills, shift the ring by kSslHop, append
+                // the accumulator at the tail, run ORT once, and stash the
+                // trailing kSslHop samples of output into the playback queue.
+                if (fill >= kSslHop) {
+                    std::memmove(ring.data(),
+                                 ring.data() + kSslHop,
+                                 (N - kSslHop) * sizeof(float));
+                    std::copy_n(accum.data(), kSslHop,
+                                ring.data() + N - kSslHop);
+                    fill = 0;
+
+                    plug.chains[ch].ssl_comp_ort->run(ring.data(), N,
+                        obuf.data(), N,
+                        nullptr, 0, "audio_out");
+
+                    std::copy_n(obuf.data() + N - kSslHop, kSslHop,
+                                outq.data());
+                    avail = kSslHop;
+                    rd    = 0;
+                }
+
+                // Pop kBlockSize samples from the output queue. While the
+                // queue is short of a full block (early frames after activate
+                // / on first hop fill), fall back to dry passthrough rather
+                // than emitting silence.
+                if (avail >= kBlockSize) {
+                    std::copy_n(outq.data() + rd, kBlockSize, wet_a.data());
+                    rd    += kBlockSize;
+                    avail -= kBlockSize;
+                } else {
+                    std::copy_n(dry.data(), kBlockSize, wet_a.data());
+                }
 
                 blend_inplace_(wet_a.data(),dry.data(),1.f-amt.ssl_comp_wet,kBlockSize);
                 std::copy_n(wet_a.data(),kBlockSize,blk);
