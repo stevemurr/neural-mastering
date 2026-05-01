@@ -1208,14 +1208,19 @@ void flush_chain_block_(Plugin& plug,
         }
 
         case StageID::Compressor: {
+            // Read control count from meta so the slot accepts either the
+            // LA-2A-style 2-control ONNX (Comp/Limit + Peak Reduction) or a
+            // 0-control fixed-setting bundle (e.g. the SSL bus comp v1).
             std::array<float,2> la2a_ctl{amt.la2a_comp_or_limit,amt.la2a_pr_norm};
+            const int n_ctl = g_state->la2a_meta.num_controls;
+            const float* ctl_ptr = (n_ctl > 0) ? la2a_ctl.data() : nullptr;
             float* ch_buf[2]={work_l,work_r};
             for (uint32_t ch=0;ch<n_ch;++ch) {
                 float* blk=ch_buf[ch];
                 std::copy_n(blk,kBlockSize,dry.data());
                 plug.chains[ch].la2a_ort->run(blk,kBlockSize,
                     wet_a.data(),kBlockSize,
-                    la2a_ctl.data(),2,"audio_out");
+                    ctl_ptr,n_ctl,"audio_out");
                 plug.chains[ch].la2a_ort->swap_state();
                 blend_inplace_(wet_a.data(),dry.data(),1.f-amt.la2a_wet,kBlockSize);
                 std::copy_n(wet_a.data(),kBlockSize,blk);
