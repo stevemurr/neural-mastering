@@ -136,6 +136,26 @@ mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Frameworks" "$OUT/Contents/Resourc
 
 cp "$DYLIB_PATH"             "$OUT/Contents/MacOS/$EXECUTABLE"
 cp "$NABLAFX_CLAP_ORT_DYLIB" "$OUT/Contents/Frameworks/"
+
+# Post-copy sanity check: verify the dylib is the right binary for this
+# mode by looking at the meta-filename string baked into the .so. Catches
+# the failure mode where a stale build/ dir or wrong cmake target produced
+# a dylib that loads the wrong meta file (would crash at host load with no
+# obvious diagnostic).
+COPIED_DYLIB="$OUT/Contents/MacOS/$EXECUTABLE"
+EXPECTED_META=$([ "$MODE" = "tone" ] && echo "tone_meta.json" || echo "plugin_meta.json")
+WRONG_META=$([   "$MODE" = "tone" ] && echo "plugin_meta.json" || echo "tone_meta.json")
+if ! /usr/bin/strings "$COPIED_DYLIB" | grep -q "$EXPECTED_META"; then
+    echo "error: $COPIED_DYLIB is missing expected meta-string '$EXPECTED_META'." >&2
+    echo "       This means the wrong dylib was copied for MODE=$MODE." >&2
+    echo "       (Likely a stale build/; try: rm -rf $BUILD_DIR && retry)" >&2
+    exit 1
+fi
+if /usr/bin/strings "$COPIED_DYLIB" | grep -q "$WRONG_META" \
+   && ! /usr/bin/strings "$COPIED_DYLIB" | grep -q "$EXPECTED_META"; then
+    echo "error: $COPIED_DYLIB looks like the wrong-mode binary." >&2
+    exit 1
+fi
 ln -sf "$(basename "$NABLAFX_CLAP_ORT_DYLIB")" \
        "$OUT/Contents/Frameworks/libonnxruntime.dylib"
 

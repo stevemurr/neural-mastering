@@ -102,6 +102,19 @@ if [ "$DO_INSTALL" -eq 1 ]; then
     INSTALL_DIR="$HOME/Library/Audio/Plug-Ins/CLAP"
     mkdir -p "$INSTALL_DIR"
     INSTALLED="$INSTALL_DIR/$(basename "$OUT")"
+
+    # Clean up stale bundles from before the TONE → NeuralMastering rename and
+    # any prior single-model dev installs. Hosts otherwise scan everything in
+    # this directory and may load an old/broken bundle that crashes the host.
+    for stale in "$INSTALL_DIR/TONE.clap" "$INSTALL_DIR/tone.clap" \
+                 "$INSTALL_DIR/com.nablafx.tone_"*.clap \
+                 "$INSTALL_DIR/com.nablafx.neuralmastering_"*.clap; do
+        if [ -e "$stale" ] && [ "$stale" != "$INSTALLED" ]; then
+            echo "[install_tone_mac] removing stale bundle: $stale"
+            rm -rf "$stale"
+        fi
+    done
+
     rm -rf "$INSTALLED"
     cp -R "$OUT" "$INSTALLED"
     echo "[install_tone_mac] installed to $INSTALLED"
