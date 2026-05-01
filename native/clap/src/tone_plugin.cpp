@@ -84,15 +84,14 @@ constexpr int kNumStages  = 7;
 // values cut CPU proportionally (1 ORT call per kSslHop samples instead of
 // 1 per kBlockSize) at the cost of (kSslHop - kBlockSize) extra latency.
 //
-// Set to kBlockSize (no accumulation) for now while we debug hop-rate
-// flutter. With the small TCN (~10M MACs/call, ~7K params) this still
-// lands at ~7 GMACs/sec which is tractable. Bump back up once the
-// boundary behavior is confirmed clean.
+// CRITICAL CONSTRAINT: `kSslHop <= trace_len - RF` so every ring shift
+// preserves at least RF samples of past context for the model's causal
+// convolutions. Asserted at activate.
 //
-// CRITICAL CONSTRAINT (when > kBlockSize): `kSslHop <= trace_len - RF` so
-// every ring shift preserves at least RF samples of past context for the
-// model's causal convolutions. Asserted at activate.
-constexpr int kSslHop     = 128;
+// The wet output is delayed by `kSslHop - kBlockSize` samples relative to
+// the dry signal at the blend step. We compensate via a per-channel dry
+// delay ring (see ssl_comp_dry_delay) so the wet/dry mix is sample-aligned.
+constexpr int kSslHop     = 1024;
 
 enum class StageID : int {
     InputLeveler  = 0,
@@ -589,6 +588,11 @@ struct ChannelChain {
     std::vector<float>                     ssl_comp_out_queue;   // [kSslHop]
     int                                    ssl_comp_out_avail{0};
     int                                    ssl_comp_out_read{0};
+    // Dry delay ring: holds (kSslHop - kBlockSize) samples of dry audio so
+    // the wet/dry blend is sample-aligned. Without this, blending a delayed
+    // wet with the current dry produces hop-rate comb-filter flutter.
+    std::vector<float>                     ssl_comp_dry_delay;
+    int                                    ssl_comp_dry_write{0};
     TruePeakCeiling                        ceiling;
 
     // EMA-smoothed LSTM output params [0,1] — 15 channels, neutral at 0.5.
@@ -950,6 +954,12 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
             ch.ssl_comp_out_queue.assign(kSslHop, 0.0f);
             ch.ssl_comp_out_avail = 0;
             ch.ssl_comp_out_read = 0;
+            // Dry delay buffer matches the wet output queue's offset so the
+            // blend step sees time-aligned dry. Length = kSslHop - kBlockSize
+            // (zero when no accumulation, fits the natural per-block path).
+            const int dry_delay_len = kSslHop - kBlockSize;
+            ch.ssl_comp_dry_delay.assign(std::max(dry_delay_len, 1), 0.0f);
+            ch.ssl_comp_dry_write = 0;
         }
 
         TruePeakCeiling::Config tcfg{
@@ -1294,21 +1304,19 @@ void flush_chain_block_(Plugin& plug,
         }
 
         case StageID::SslComp: {
-            // SSL-style bus comp: stateless long-RF causal TCN.
-            //
-            // The full forward pass is too expensive to run on every host
-            // kBlockSize call (~1 GMAC per call at our model size), so we
-            // accumulate kSslHop samples between ORT invocations and play out
-            // the resulting kSslHop-sample output queue over (kSslHop /
-            // kBlockSize) host calls. CPU drops by that factor; latency rises
-            // by (kSslHop - kBlockSize) samples on top of the ring's
-            // trace_len-sample warm-up.
+            // SSL-style bus comp: stateless long-RF causal TCN with hop
+            // accumulation. The wet output queue trails the input by
+            // (kSslHop - kBlockSize) samples — we delay the dry signal by the
+            // same amount via a per-channel ring so the wet/dry blend stays
+            // sample-aligned (otherwise blending current dry with delayed
+            // wet produces a hop-rate comb-filter flutter).
             //
             // Skipped if the SSL bundle wasn't shipped (ssl_comp_ort null) or
             // the wet mix is at zero.
             if (amt.ssl_comp_wet <= 0.f) break;
             if (!plug.chains[0].ssl_comp_ort) break;
             const int N = g_state->ssl_comp_meta.trace_len;
+            const int dry_delay_len = kSslHop - kBlockSize;
             float* ch_buf[2]={work_l,work_r};
             for (uint32_t ch=0;ch<n_ch;++ch) {
                 float* blk=ch_buf[ch];
@@ -1318,9 +1326,11 @@ void flush_chain_block_(Plugin& plug,
                 auto& ring   = plug.chains[ch].ssl_comp_in_ring;
                 auto& obuf   = plug.chains[ch].ssl_comp_out_buf;
                 auto& outq   = plug.chains[ch].ssl_comp_out_queue;
+                auto& dryd   = plug.chains[ch].ssl_comp_dry_delay;
                 int&  fill   = plug.chains[ch].ssl_comp_in_fill;
                 int&  avail  = plug.chains[ch].ssl_comp_out_avail;
                 int&  rd     = plug.chains[ch].ssl_comp_out_read;
+                int&  dwr    = plug.chains[ch].ssl_comp_dry_write;
 
                 // Push input into the hop-sized accumulator.
                 std::copy_n(blk, kBlockSize, accum.data() + fill);
@@ -1347,20 +1357,43 @@ void flush_chain_block_(Plugin& plug,
                     rd    = 0;
                 }
 
+                // Build a per-sample time-aligned dry block. With dry delay
+                // length = kSslHop - kBlockSize, the dry sample we need to
+                // blend against this call's wet was written into the delay
+                // (kSslHop / kBlockSize - 1) host calls ago. Read those
+                // samples out, then write the new dry in for future use.
+                std::array<float, kBlockSize> dry_aligned{};
+                if (dry_delay_len > 0) {
+                    const int len = static_cast<int>(dryd.size());
+                    for (int i = 0; i < kBlockSize; ++i) {
+                        const int read_idx = (dwr + i) % len;
+                        dry_aligned[i] = dryd[read_idx];
+                        dryd[read_idx] = dry[i];   // overwrite with new dry
+                    }
+                    dwr = (dwr + kBlockSize) % len;
+                } else {
+                    std::copy_n(dry.data(), kBlockSize, dry_aligned.data());
+                }
+
                 // Pop kBlockSize samples from the output queue. While the
-                // queue is short of a full block (early frames after activate
-                // / on first hop fill), fall back to dry passthrough rather
-                // than emitting silence.
+                // queue is short of a full block (the kSslHop-sample warm-up
+                // window after activate, before the first ORT call), leave
+                // the current dry untouched in blk so the host hears the
+                // bypassed signal instead of silence or a comb of stale-zero
+                // delayed-dry against silence.
                 if (avail >= kBlockSize) {
                     std::copy_n(outq.data() + rd, kBlockSize, wet_a.data());
                     rd    += kBlockSize;
                     avail -= kBlockSize;
-                } else {
-                    std::copy_n(dry.data(), kBlockSize, wet_a.data());
+                    // Blend the (delayed) wet against the time-aligned dry,
+                    // NOT the current dry — they're the same audio in
+                    // absolute time, so this is the only mix that doesn't
+                    // produce hop-rate comb-filter flutter.
+                    blend_inplace_(wet_a.data(), dry_aligned.data(),
+                                   1.f - amt.ssl_comp_wet, kBlockSize);
+                    std::copy_n(wet_a.data(), kBlockSize, blk);
                 }
-
-                blend_inplace_(wet_a.data(),dry.data(),1.f-amt.ssl_comp_wet,kBlockSize);
-                std::copy_n(wet_a.data(),kBlockSize,blk);
+                // else: leave blk = current dry (warm-up pass-through).
             }
             break;
         }
