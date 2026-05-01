@@ -84,14 +84,15 @@ constexpr int kNumStages  = 7;
 // values cut CPU proportionally (1 ORT call per kSslHop samples instead of
 // 1 per kBlockSize) at the cost of (kSslHop - kBlockSize) extra latency.
 //
-// CRITICAL CONSTRAINT: kSslHop must satisfy `kSslHop <= trace_len - RF` so
-// that every ring shift preserves at least RF samples of past context for
-// the model's causal convolutions. Otherwise the first RF samples of each
-// hop's output get zero-padded context and produce a discontinuity at the
-// hop boundary — audible as a hop-rate flutter (~21.5 Hz at hop=2048,
-// trace_len=2048: ring is fully replaced every call, RF samples of context
-// are missing). Asserted at activate.
-constexpr int kSslHop     = 1024;
+// Set to kBlockSize (no accumulation) for now while we debug hop-rate
+// flutter. With the small TCN (~10M MACs/call, ~7K params) this still
+// lands at ~7 GMACs/sec which is tractable. Bump back up once the
+// boundary behavior is confirmed clean.
+//
+// CRITICAL CONSTRAINT (when > kBlockSize): `kSslHop <= trace_len - RF` so
+// every ring shift preserves at least RF samples of past context for the
+// model's causal convolutions. Asserted at activate.
+constexpr int kSslHop     = 128;
 
 enum class StageID : int {
     InputLeveler  = 0,
