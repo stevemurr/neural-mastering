@@ -1,14 +1,16 @@
-# SSL-style bus compressor emulator (fixed setting, peak-catcher mode).
+# SSL-style bus compressor emulator (fixed setting, peak-catcher mode,
+# 1 ms release).
 #
-# Causal TCN with 10 dilation blocks (1, 2, 4, …, 512) at kernel_size=11.
-# Receptive field = 1 + (11-1)*sum(dilations) = 10231 samples ≈ 232 ms at
-# 44.1 kHz. Long enough for the full release ramp + the front edge of the
-# program-dependent auto-release. (stack_size=10 == num_blocks ensures the
-# dilation pattern doesn't reset mid-stack.)
+# Causal TCN with 6 dilation blocks (1, 2, 4, 8, 16, 32) at kernel_size=11.
+# Receptive field = 1 + 10*63 = 631 samples ≈ 14 ms at 44.1 kHz. With the
+# QC's release fixed to 1 ms (~44 samples), the compressor's behavior is
+# essentially "catch peak, drop gain for the peak's duration, snap back" —
+# no long-term envelope/auto-release to model. RF=14ms is plenty.
 #
-# channel_width=32 gives enough per-layer capacity to learn the VCA's
-# nonlinear color under fast modulation — at light GR (1-3 dB) this is most
-# of what differentiates an SSL from any other peak catcher. ~60k params total.
+# channel_width=16 keeps capacity for the VCA-color side of things while
+# the smaller block stack keeps total params ~10K and per-call compute
+# tiny. With kSslHop=2048 the runtime sits well under 1 GMAC/sec for the
+# whole stage.
 
 _target_: nablafx.BlackBoxSystem
 lr: 0.005
@@ -21,12 +23,12 @@ model:
     num_inputs: 1
     num_outputs: 1
     num_controls: 0
-    num_blocks: 10
+    num_blocks: 6
     kernel_size: 11
     dilation_growth: 2
-    channel_width: 32
+    channel_width: 16
     channel_growth: 1
-    stack_size: 10
+    stack_size: 6
     groups: 1
     bias: true
     causal: true

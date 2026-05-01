@@ -83,9 +83,10 @@ constexpr int kNumStages  = 7;
 // SSL bus comp accumulator size — must be a multiple of kBlockSize. Larger
 // values cut CPU proportionally (1 ORT call per kSslHop samples instead of
 // 1 per kBlockSize) at the cost of (kSslHop - kBlockSize) extra latency.
-// 1024 = 8 host blocks ≈ 20 ms added latency; 8× CPU reduction vs running
-// per kBlockSize.
-constexpr int kSslHop     = 1024;
+// 2048 = 16 host blocks ≈ 46 ms added latency; 16× CPU reduction vs running
+// per kBlockSize. Combined with the smaller TCN config (channel_width=16,
+// num_blocks=8), keeps the audio thread comfortable.
+constexpr int kSslHop     = 2048;
 
 enum class StageID : int {
     InputLeveler  = 0,
