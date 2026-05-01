@@ -1,6 +1,6 @@
 {
-  "effect_name": "outputs_spectralmaskeq_2026-04-30-18-36-30",
-  "model_id": "outputs_spectralmaskeq_2026-04-30-18-36-30",
+  "effect_name": "outputs_spectralmaskeq_2026-05-01-10-25-01",
+  "model_id": "outputs_spectralmaskeq_2026-05-01-10-25-01",
   "architecture": "lstm",
   "sample_rate": 44100,
   "channels": 1,
@@ -47,10 +47,10 @@
       "params": {
         "sample_rate": 44100,
         "block_size": 128,
-        "num_control_params": 32,
-        "n_fft": 1024,
-        "hop": 512,
-        "n_bands": 32,
+        "num_control_params": 64,
+        "n_fft": 2048,
+        "hop": 1024,
+        "n_bands": 64,
         "min_gain_db": -18.0,
         "max_gain_db": 18.0,
         "f_min": 30.0,
