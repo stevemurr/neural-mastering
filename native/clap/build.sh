@@ -58,14 +58,32 @@ else
         echo "error: $STAGING is missing tone_meta.json" >&2
         exit 1
     fi
-    for sub in saturator la2a; do
-        if [ ! -d "$STAGING/$sub" ]; then
-            echo "error: $STAGING is missing the $sub/ sub-bundle" >&2
+    # Discover all sub-bundle directory names from tone_meta.json
+    # (sub_bundles map for single-instance stages + auto_eq.classes for the
+    # multi-class auto-EQ). Hardcoding the list here would silently drop any
+    # new role added later (e.g. how ssl_comp got missed when first added).
+    SUB_BUNDLE_DIRS=$(/usr/bin/env python3 - "$STAGING/tone_meta.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+dirs = set()
+for d in (m.get("sub_bundles") or {}).values():
+    dirs.add(d)
+for d in (m.get("auto_eq", {}).get("classes") or {}).values():
+    dirs.add(d)
+print(" ".join(sorted(dirs)))
+PY
+)
+    if [ -z "${SUB_BUNDLE_DIRS}" ]; then
+        echo "error: tone_meta.json declares no sub_bundles or auto_eq.classes" >&2
+        exit 1
+    fi
+    for dir in $SUB_BUNDLE_DIRS; do
+        if [ ! -d "$STAGING/$dir" ]; then
+            echo "error: $STAGING is missing sub-bundle $dir/ (declared in tone_meta.json)" >&2
             exit 1
         fi
     done
-    # auto_eq is now multi-class: one auto_eq_<class>/ dir per preset.
-    # tone_meta.json's auto_eq.classes map names which dirs to copy.
+    # AUTOEQ_DIRS kept for symmetry with the copy step below.
     AUTOEQ_DIRS=$(/usr/bin/env python3 - "$STAGING/tone_meta.json" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
@@ -73,16 +91,6 @@ classes = m.get("auto_eq", {}).get("classes") or {}
 print(" ".join(sorted(set(classes.values()))))
 PY
 )
-    if [ -z "${AUTOEQ_DIRS}" ]; then
-        echo "error: tone_meta.json has no auto_eq.classes map" >&2
-        exit 1
-    fi
-    for dir in $AUTOEQ_DIRS; do
-        if [ ! -d "$STAGING/$dir" ]; then
-            echo "error: $STAGING is missing auto_eq sub-bundle $dir/" >&2
-            exit 1
-        fi
-    done
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -164,10 +172,9 @@ if [ "$MODE" = "single" ]; then
     cp "$STAGING/plugin_meta.json"  "$OUT/Contents/Resources/"
 else
     cp "$STAGING/tone_meta.json"    "$OUT/Contents/Resources/"
-    for sub in saturator la2a; do
-        cp -R "$STAGING/$sub" "$OUT/Contents/Resources/"
-    done
-    for dir in $AUTOEQ_DIRS; do
+    # SUB_BUNDLE_DIRS already covers single-instance roles + auto_eq classes
+    # (see the validation block above). Copy them all in one pass.
+    for dir in $SUB_BUNDLE_DIRS; do
         cp -R "$STAGING/$dir" "$OUT/Contents/Resources/"
     done
     # Copy the WebUI so the plugin can load it at runtime.
