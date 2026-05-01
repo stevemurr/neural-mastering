@@ -457,7 +457,24 @@ public:
             }
         }
         const float* aud_out = outs[audio_out_idx].GetTensorData<float>();
-        std::copy_n(aud_out, audio_out_len, audio_out);
+        // The actual ORT output length may be SHORTER than audio_in_len —
+        // streaming-mode TCN export trims (rf-1) samples (no internal
+        // pre-padding; output_len = input_len - (rf-1)). Clamp to the real
+        // tensor element count to avoid reading past the end (which would
+        // emit garbage memory and produce a hop-rate flutter on the wet).
+        const auto out_info = outs[audio_out_idx].GetTensorTypeAndShapeInfo();
+        const int64_t actual_len =
+            static_cast<int64_t>(out_info.GetElementCount());
+        const int64_t copy_len =
+            std::min<int64_t>(audio_out_len, actual_len);
+        std::copy_n(aud_out, copy_len, audio_out);
+        // If the caller asked for more than the model produced, zero-fill the
+        // tail so callers that don't size-check at least see silence rather
+        // than uninitialised memory.
+        if (copy_len < audio_out_len) {
+            std::fill(audio_out + copy_len,
+                      audio_out + audio_out_len, 0.0f);
+        }
 
         // Read back states by output-name (always "<state>_out").
         for (std::size_t si = 0; si < meta_.state_tensors.size(); ++si) {
@@ -1311,11 +1328,19 @@ void flush_chain_block_(Plugin& plug,
             // sample-aligned (otherwise blending current dry with delayed
             // wet produces a hop-rate comb-filter flutter).
             //
+            // Streaming-mode TCN export contract: the ONNX takes `trace_len`
+            // samples in (the entire ring, including the `rf-1` history
+            // prefix) and produces `trace_len - (rf-1)` samples out — the
+            // model's predictions for ring positions [rf-1, trace_len-1].
+            // Output position i corresponds to ring position (rf-1 + i).
+            //
             // Skipped if the SSL bundle wasn't shipped (ssl_comp_ort null) or
             // the wet mix is at zero.
             if (amt.ssl_comp_wet <= 0.f) break;
             if (!plug.chains[0].ssl_comp_ort) break;
-            const int N = g_state->ssl_comp_meta.trace_len;
+            const int N           = g_state->ssl_comp_meta.trace_len;
+            const int rf          = g_state->ssl_comp_meta.receptive_field;
+            const int actual_olen = N - (rf - 1);  // ORT output length
             const int dry_delay_len = kSslHop - kBlockSize;
             float* ch_buf[2]={work_l,work_r};
             for (uint32_t ch=0;ch<n_ch;++ch) {
@@ -1347,11 +1372,19 @@ void flush_chain_block_(Plugin& plug,
                                 ring.data() + N - kSslHop);
                     fill = 0;
 
+                    // ORT produces `actual_olen` (= N - rf + 1) samples;
+                    // pass that as audio_out_len so OrtMiniSession doesn't
+                    // read past the tensor end.
                     plug.chains[ch].ssl_comp_ort->run(ring.data(), N,
-                        obuf.data(), N,
+                        obuf.data(), actual_olen,
                         nullptr, 0, "audio_out");
 
-                    std::copy_n(obuf.data() + N - kSslHop, kSslHop,
+                    // Output sample i corresponds to ring position (rf-1+i).
+                    // We want the kSslHop newest predictions (ring positions
+                    // [N-kSslHop, N-1]), which are at output positions
+                    // [N-kSslHop-(rf-1), actual_olen-1] = the LAST kSslHop
+                    // samples of the actual output.
+                    std::copy_n(obuf.data() + actual_olen - kSslHop, kSslHop,
                                 outq.data());
                     avail = kSslHop;
                     rd    = 0;
