@@ -79,7 +79,7 @@ using nablafx::param_id_for;
 // processor's TVFiLM cond_block_size. Changing this requires re-exporting both
 // ONNX bundles at the new block size.
 constexpr int kBlockSize  = 128;
-constexpr int kNumStages  = 6;
+constexpr int kNumStages  = 7;
 
 enum class StageID : int {
     InputLeveler  = 0,
@@ -88,6 +88,7 @@ enum class StageID : int {
     Compressor    = 3,
     OutputLeveler = 4,
     SpatialD      = 5,
+    SslComp       = 6,
 };
 
 // ---------------------------------------------------------------------------
@@ -282,6 +283,10 @@ struct ModuleState {
     std::unordered_map<std::string, std::size_t>         autoeq_class_index;
     PluginMeta                 sat_meta;
     PluginMeta                 la2a_meta;
+    PluginMeta                 ssl_comp_meta;          // optional; loaded if
+                                                       // tone_meta.sub_bundles
+                                                       // has "ssl_comp"
+    bool                       ssl_comp_loaded{false};
     std::string                bundle_dir;            // .../NeuralMastering.clap/Contents
     std::string                resources_dir;         // .../Contents/Resources
     std::string                plugin_id_str;         // "com.nablafx.<model_id>"
@@ -552,14 +557,14 @@ struct ChannelChain {
     float sat_hpf_b0{0.f}, sat_hpf_b1{0.f}, sat_hpf_a1{0.f};
     float sat_hpf_x1{0.f}, sat_hpf_y1{0.f};
     std::unique_ptr<OrtMiniSession>        la2a_ort;
-    // Ring buffer used when the compressor bundle is a stateless model (e.g.
-    // long-RF causal TCN) that must be called with `trace_len` samples per
-    // ORT call. Sized to la2a_meta.trace_len at activate; left empty for
-    // stateful bundles (LSTM with hidden state — those use the per-block
-    // path and don't need the ring).
-    std::vector<float>                     la2a_in_ring;
-    std::vector<float>                     la2a_out_buf;
-    int                                    la2a_in_fill{0};
+    // SSL-style bus comp (separate stage from LA-2A). Stateless long-RF
+    // causal TCN: needs a trace_len-sized input ring per channel because the
+    // ORT call expects all RF samples of context per invocation. Allocated
+    // only when the ssl_comp sub-bundle is shipped; otherwise null and the
+    // SslComp stage is a passthrough.
+    std::unique_ptr<OrtMiniSession>        ssl_comp_ort;
+    std::vector<float>                     ssl_comp_in_ring;
+    std::vector<float>                     ssl_comp_out_buf;
     TruePeakCeiling                        ceiling;
 
     // EMA-smoothed LSTM output params [0,1] — 15 channels, neutral at 0.5.
@@ -598,7 +603,7 @@ struct Plugin {
     float                autoeq_env_decay{0.f};
 
     // Processor ordering — driven by GUI drag-and-drop.
-    std::array<int, kNumStages> processor_order{0, 1, 2, 3, 4, 5};
+    std::array<int, kNumStages> processor_order{0, 1, 2, 3, 4, 5, 6};
 
     // Active auto-EQ class index (into ModuleState::autoeq_metas /
     // tone_meta.auto_eq.class_order). Updated from the audio thread when the
@@ -613,7 +618,7 @@ struct Plugin {
     // GUI → audio-thread order change.
     std::mutex               order_mutex;
     bool                     order_pending{false};
-    std::array<int,kNumStages> pending_order{0,1,2,3,4,5};
+    std::array<int,kNumStages> pending_order{0,1,2,3,4,5,6};
 
     // CLAP GUI handle (main thread only).
     ToneGUIState* gui_state{nullptr};
@@ -896,18 +901,15 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
                 + "/model.onnx",
             g_state->la2a_meta);
 
-        // Stateless bundle (e.g. long-RF causal TCN): allocate a trace_len
-        // input ring and an output buffer. The compressor stage shifts the
-        // ring by kBlockSize per call, runs ORT against the full ring, and
-        // copies the trailing kBlockSize samples of the output as the new
-        // wet block. Stateful bundles (LSTM with hidden state) leave the
-        // ring empty and use the per-block path.
-        const bool stateless_comp = g_state->la2a_meta.state_tensors.empty();
-        if (stateless_comp && g_state->la2a_meta.trace_len > 0) {
-            const int N = g_state->la2a_meta.trace_len;
-            ch.la2a_in_ring.assign(N, 0.0f);
-            ch.la2a_out_buf.assign(N, 0.0f);
-            ch.la2a_in_fill = 0;
+        if (g_state->ssl_comp_loaded && g_state->ssl_comp_meta.trace_len > 0) {
+            ch.ssl_comp_ort = std::make_unique<OrtMiniSession>(
+                *g_state->ort_env,
+                g_state->resources_dir + "/" +
+                    g_state->tone_meta.sub_bundles.at("ssl_comp") + "/model.onnx",
+                g_state->ssl_comp_meta);
+            const int N = g_state->ssl_comp_meta.trace_len;
+            ch.ssl_comp_in_ring.assign(N, 0.0f);
+            ch.ssl_comp_out_buf.assign(N, 0.0f);
         }
 
         TruePeakCeiling::Config tcfg{
@@ -980,6 +982,7 @@ struct AmountSnapshot {
     float trim_lin;
     float eq_range;
     float eq_speed_ms;
+    float ssl_comp_wet;
 };
 
 AmountSnapshot resolve_amount_(const Plugin& plug) {
@@ -987,6 +990,7 @@ AmountSnapshot resolve_amount_(const Plugin& plug) {
     float cl=1.f,cmp=50.f,eq=0.5f,trm_db=0.f;
     float olv=1.f,olt=-14.f,spw=0.f,spr=0.8f,spd=0.5f;
     float eqr=1.f,eqs=100.f;
+    float ssc=0.f;
     float eq_off[5]={};
     int   cls_idx=plug.active_autoeq_cls;
     for (size_t i=0;i<plug.meta->controls.size();++i) {
@@ -1006,6 +1010,7 @@ AmountSnapshot resolve_amount_(const Plugin& plug) {
         else if(c.id=="OLT") olt=v; else if(c.id=="SPW") spw=v;
         else if(c.id=="SPR") spr=v; else if(c.id=="SPD") spd=v;
         else if(c.id=="TRM") trm_db=v;
+        else if(c.id=="SSC") ssc=v;
     }
     AmountSnapshot s{};
     s.lvl_wet=lvl; s.lvl_target_lufs=lvt;
@@ -1022,6 +1027,7 @@ AmountSnapshot resolve_amount_(const Plugin& plug) {
     s.trim_lin=std::pow(10.f,trm_db/20.f);
     s.eq_range=eqr;
     s.eq_speed_ms=eqs;
+    s.ssl_comp_wet = ssc * g_state->tone_meta.amt_ssl_comp.wet_mix_max;
     return s;
 }
 
@@ -1230,52 +1236,56 @@ void flush_chain_block_(Plugin& plug,
         }
 
         case StageID::Compressor: {
-            // Two call modes depending on bundle:
-            //   * Stateful (LSTM): per-block path, ORT receives kBlockSize
-            //     samples and carries context via hidden state.
-            //   * Stateless (TCN with long RF): windowed path, the channel
-            //     keeps a `trace_len` ring; per kBlockSize call the ring
-            //     shifts, ORT receives the whole ring, and the trailing
-            //     kBlockSize samples of output are the new wet block.
+            // LA-2A LSTM: per-block call, ORT receives kBlockSize samples
+            // and carries context via the LSTM hidden state.
             std::array<float,2> la2a_ctl{amt.la2a_comp_or_limit,amt.la2a_pr_norm};
-            const int n_ctl = g_state->la2a_meta.num_controls;
-            const float* ctl_ptr = (n_ctl > 0) ? la2a_ctl.data() : nullptr;
-            const int trace_len = g_state->la2a_meta.trace_len;
-            const bool windowed = !plug.chains[0].la2a_in_ring.empty();
+            float* ch_buf[2]={work_l,work_r};
+            for (uint32_t ch=0;ch<n_ch;++ch) {
+                float* blk=ch_buf[ch];
+                std::copy_n(blk,kBlockSize,dry.data());
+                plug.chains[ch].la2a_ort->run(blk, kBlockSize,
+                    wet_a.data(), kBlockSize,
+                    la2a_ctl.data(), 2, "audio_out");
+                plug.chains[ch].la2a_ort->swap_state();
+                blend_inplace_(wet_a.data(),dry.data(),1.f-amt.la2a_wet,kBlockSize);
+                std::copy_n(wet_a.data(),kBlockSize,blk);
+            }
+            break;
+        }
+
+        case StageID::SslComp: {
+            // SSL-style bus comp: stateless long-RF causal TCN, windowed-call
+            // mode. Per kBlockSize input the channel's trace_len ring shifts
+            // left, the new block is appended at the tail, and the trailing
+            // kBlockSize samples of the ORT output become the new wet (no
+            // added algorithmic latency once the ring has filled — there's a
+            // ~trace_len-sample warm-up after activation while the ring fills
+            // with real input).
+            //
+            // Skipped if the SSL bundle wasn't shipped (sub_bundles.ssl_comp
+            // absent → ssl_comp_ort is null → stage is a passthrough).
+            if (amt.ssl_comp_wet <= 0.f) break;
+            if (!plug.chains[0].ssl_comp_ort) break;
+            const int N = g_state->ssl_comp_meta.trace_len;
             float* ch_buf[2]={work_l,work_r};
             for (uint32_t ch=0;ch<n_ch;++ch) {
                 float* blk=ch_buf[ch];
                 std::copy_n(blk,kBlockSize,dry.data());
 
-                if (windowed) {
-                    auto& ring  = plug.chains[ch].la2a_in_ring;
-                    auto& obuf  = plug.chains[ch].la2a_out_buf;
-                    const int N = trace_len;
-                    // Shift ring left by kBlockSize and append the new block at
-                    // the end. (Memmove-based shift; N is bounded so this is
-                    // cheap. A circular indexing scheme would save the memmove
-                    // but complicates the contiguous-buffer requirement of the
-                    // ORT input tensor.)
-                    std::memmove(ring.data(),
-                                 ring.data() + kBlockSize,
-                                 (N - kBlockSize) * sizeof(float));
-                    std::copy_n(blk, kBlockSize, ring.data() + N - kBlockSize);
+                auto& ring = plug.chains[ch].ssl_comp_in_ring;
+                auto& obuf = plug.chains[ch].ssl_comp_out_buf;
+                std::memmove(ring.data(),
+                             ring.data() + kBlockSize,
+                             (N - kBlockSize) * sizeof(float));
+                std::copy_n(blk, kBlockSize, ring.data() + N - kBlockSize);
 
-                    plug.chains[ch].la2a_ort->run(ring.data(), N,
-                        obuf.data(), N,
-                        ctl_ptr, n_ctl, "audio_out");
-                    // Causal TCN: output[N-128..N-1] is the answer for the
-                    // most recent kBlockSize input samples (sample-aligned, no
-                    // added algorithmic latency once the ring has filled).
-                    std::copy_n(obuf.data() + N - kBlockSize, kBlockSize,
-                                wet_a.data());
-                } else {
-                    plug.chains[ch].la2a_ort->run(blk, kBlockSize,
-                        wet_a.data(), kBlockSize,
-                        ctl_ptr, n_ctl, "audio_out");
-                    plug.chains[ch].la2a_ort->swap_state();
-                }
-                blend_inplace_(wet_a.data(),dry.data(),1.f-amt.la2a_wet,kBlockSize);
+                plug.chains[ch].ssl_comp_ort->run(ring.data(), N,
+                    obuf.data(), N,
+                    nullptr, 0, "audio_out");
+                std::copy_n(obuf.data() + N - kBlockSize, kBlockSize,
+                            wet_a.data());
+
+                blend_inplace_(wet_a.data(),dry.data(),1.f-amt.ssl_comp_wet,kBlockSize);
                 std::copy_n(wet_a.data(),kBlockSize,blk);
             }
             break;
@@ -1657,6 +1667,14 @@ static bool entry_init(const char* /*plugin_path*/) {
         st->la2a_meta   = load_meta(st->resources_dir + "/" +
                                     st->tone_meta.sub_bundles.at("la2a")
                                     + "/plugin_meta.json");
+        // SSL bus comp is optional — older bundles don't ship it. If present,
+        // load its meta so we can size per-channel ring buffers at activate.
+        if (st->tone_meta.sub_bundles.count("ssl_comp")) {
+            st->ssl_comp_meta = load_meta(
+                st->resources_dir + "/" + st->tone_meta.sub_bundles.at("ssl_comp")
+                + "/plugin_meta.json");
+            st->ssl_comp_loaded = true;
+        }
 
         // Load every auto-EQ class meta in the canonical class_order. All
         // classes must share the same PEQ DSP block geometry (frozen freqs +

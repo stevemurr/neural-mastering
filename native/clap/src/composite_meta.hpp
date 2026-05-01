@@ -30,6 +30,10 @@ struct CompositeAmountAutoEq {
     float wet_mix_max = 1.0f;
 };
 
+struct CompositeAmountSslComp {
+    float wet_mix_max = 1.0f;
+};
+
 struct CompositeLevelerCfg {
     float target_lufs = -14.0f;
 };
@@ -68,6 +72,7 @@ struct CompositeMeta {
     CompositeAmountSat                             amt_sat;
     CompositeAmountLa2a                            amt_la2a;
     CompositeAmountAutoEq                          amt_autoeq;
+    CompositeAmountSslComp                         amt_ssl_comp;
     CompositeLevelerCfg                            leveler;
     CompositeCeilingCfg                            ceiling;
 };

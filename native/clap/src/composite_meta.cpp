@@ -89,6 +89,12 @@ CompositeMeta load_composite_meta(const std::string& path) {
     const auto& aeq = am.at("auto_eq");
     m.amt_autoeq.wet_mix_max = aeq.at("wet_mix_max").get<float>();
 
+    // ssl_comp section is optional — older bundles don't include it.
+    if (am.contains("ssl_comp")) {
+        const auto& sslc = am.at("ssl_comp");
+        m.amt_ssl_comp.wet_mix_max = sslc.value("wet_mix_max", 1.0f);
+    }
+
     const auto& lev = j.at("leveler");
     m.leveler.target_lufs = lev.at("target_lufs").get<float>();
 

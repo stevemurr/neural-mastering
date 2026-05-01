@@ -55,6 +55,11 @@ class _AmountMappingAutoEq:
 
 
 @dataclass(frozen=True)
+class _AmountMappingSslComp:
+    wet_mix_max: float = 1.0   # SSC knob → ssl_comp wet/dry mix
+
+
+@dataclass(frozen=True)
 class CompositePluginMeta:
     """Top-level meta for the composite NeuralMastering plugin.
 
@@ -124,6 +129,8 @@ def _build_default_meta(
                 "default": 1.0, "skew": 1.0, "unit": "switch"},
         "CMP": {"id": "CMP", "name": "Peak Reduction", "min": 0.0,   "max": 100.0,
                 "default": 0.0, "skew": 1.0, "unit": ""},
+        "SSC": {"id": "SSC", "name": "Bus Comp",       "min": 0.0,   "max": 1.0,
+                "default": 0.0, "skew": 1.0, "unit": ""},
         "CLS": {"id": "CLS", "name": "EQ Class",
                 "min": 0.0, "max": float(max(0, n_classes - 1)),
                 "default": float(default_idx), "skew": 1.0, "unit": "enum"},
@@ -164,6 +171,7 @@ def _build_default_meta(
         sub_bundles={
             "saturator": "saturator",
             "la2a":      "la2a",
+            "ssl_comp":  "ssl_comp",
         },
         auto_eq=auto_eq,
         controls=controls,
@@ -171,6 +179,7 @@ def _build_default_meta(
             "saturator": asdict(_AmountMappingSat()),
             "la2a":      asdict(_AmountMappingLa2a()),
             "auto_eq":   asdict(_AmountMappingAutoEq()),
+            "ssl_comp":  asdict(_AmountMappingSslComp()),
         },
         leveler={"target_lufs": -14.0},
         ceiling={"ceiling_dbtp": -1.0, "lookahead_ms": 1.5,

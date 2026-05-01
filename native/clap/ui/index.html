@@ -334,12 +334,13 @@ const PROCESSORS = [
   { id: 3, name: 'COMPRESSOR',params: ['C_L', 'CMP'],              wetParams: ['CMP'] },
   { id: 4, name: 'OUT LEVEL', params: ['OLV', 'OLT'],              wetParams: ['OLV'] },
   { id: 5, name: 'SPATIAL D', params: ['SPW', 'SPR', 'SPD'],       wetParams: ['SPW'] },
+  { id: 6, name: 'BUS COMP',  params: ['SSC'],                     wetParams: ['SSC'] },
 ];
 
 // Runtime state
 let paramMeta   = {};   // id → { name, min, max, def, unit }
 let paramValues = {};   // id → float
-let procOrder   = [0,1,2,3,4,5];
+let procOrder   = [0,1,2,3,4,5,6];
 let selectedProc = 0;
 
 // ============================================================
@@ -771,7 +772,7 @@ function refreshTrimKnob() {
 window.toneInit = function(state) {
   paramMeta   = state.paramMeta   || {};
   paramValues = state.paramValues || {};
-  procOrder   = state.processorOrder || [0,1,2,3,4,5];
+  procOrder   = state.processorOrder || [0,1,2,3,4,5,6];
   selectedProc = procOrder[0] ?? 0;
 
   renderTrimKnob();
@@ -816,6 +817,7 @@ window.toneInit = function(state) {
     '#e76f51',  // 3 Compressor
     '#5fa8d3',  // 4 OutputLeveler
     '#a8dadc',  // 5 SpatialD
+    '#bb86fc',  // 6 SslComp (BUS COMP)
   ];
   const STAGE_NAMES = ['LEVELER', 'AUTO EQ', 'SAT', 'COMP', 'OUT LEV', 'SPATIAL'];
 

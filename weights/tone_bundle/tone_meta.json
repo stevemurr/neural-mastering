@@ -6,7 +6,8 @@
   "channels": 1,
   "sub_bundles": {
     "saturator": "saturator",
-    "la2a": "la2a"
+    "la2a": "la2a",
+    "ssl_comp": "ssl_comp"
   },
   "auto_eq": {
     "default_class": "full_mix",
@@ -112,6 +113,15 @@
       "name": "Peak Reduction",
       "min": 0.0,
       "max": 100.0,
+      "default": 0.0,
+      "skew": 1.0,
+      "unit": ""
+    },
+    "SSC": {
+      "id": "SSC",
+      "name": "Bus Comp",
+      "min": 0.0,
+      "max": 1.0,
       "default": 0.0,
       "skew": 1.0,
       "unit": ""
@@ -264,6 +274,9 @@
       "comp_or_limit": 1.0
     },
     "auto_eq": {
+      "wet_mix_max": 1.0
+    },
+    "ssl_comp": {
       "wet_mix_max": 1.0
     }
   },
