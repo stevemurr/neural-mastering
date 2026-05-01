@@ -83,10 +83,15 @@ constexpr int kNumStages  = 7;
 // SSL bus comp accumulator size — must be a multiple of kBlockSize. Larger
 // values cut CPU proportionally (1 ORT call per kSslHop samples instead of
 // 1 per kBlockSize) at the cost of (kSslHop - kBlockSize) extra latency.
-// 2048 = 16 host blocks ≈ 46 ms added latency; 16× CPU reduction vs running
-// per kBlockSize. Combined with the smaller TCN config (channel_width=16,
-// num_blocks=8), keeps the audio thread comfortable.
-constexpr int kSslHop     = 2048;
+//
+// CRITICAL CONSTRAINT: kSslHop must satisfy `kSslHop <= trace_len - RF` so
+// that every ring shift preserves at least RF samples of past context for
+// the model's causal convolutions. Otherwise the first RF samples of each
+// hop's output get zero-padded context and produce a discontinuity at the
+// hop boundary — audible as a hop-rate flutter (~21.5 Hz at hop=2048,
+// trace_len=2048: ring is fully replaced every call, RF samples of context
+// are missing). Asserted at activate.
+constexpr int kSslHop     = 1024;
 
 enum class StageID : int {
     InputLeveler  = 0,
@@ -920,12 +925,23 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
             g_state->la2a_meta);
 
         if (g_state->ssl_comp_loaded && g_state->ssl_comp_meta.trace_len > 0) {
+            const int N  = g_state->ssl_comp_meta.trace_len;
+            const int rf = g_state->ssl_comp_meta.receptive_field;
+            // Causal-context safety: each ring shift must preserve at least
+            // RF samples of past audio so the model's first hop-output sample
+            // sees its full receptive field. Otherwise hop-rate discontinuity.
+            if (kSslHop > N - rf) {
+                throw std::runtime_error(
+                    "ssl_comp: kSslHop=" + std::to_string(kSslHop) +
+                    " exceeds trace_len-RF=" + std::to_string(N - rf) +
+                    "; would cause hop-rate discontinuity. Either lower "
+                    "kSslHop or re-export the bundle with a larger trace_len.");
+            }
             ch.ssl_comp_ort = std::make_unique<OrtMiniSession>(
                 *g_state->ort_env,
                 g_state->resources_dir + "/" +
                     g_state->tone_meta.sub_bundles.at("ssl_comp") + "/model.onnx",
                 g_state->ssl_comp_meta);
-            const int N = g_state->ssl_comp_meta.trace_len;
             ch.ssl_comp_in_ring.assign(N, 0.0f);
             ch.ssl_comp_out_buf.assign(N, 0.0f);
             ch.ssl_comp_in_accum.assign(kSslHop, 0.0f);
