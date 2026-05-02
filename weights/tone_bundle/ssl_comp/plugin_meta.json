@@ -1,6 +1,6 @@
 {
-  "effect_name": "outputs_tcn_2026-05-01-15-55-07",
-  "model_id": "outputs_tcn_2026-05-01-15-55-07",
+  "effect_name": "outputs_tcn_2026-05-01-19-00-15",
+  "model_id": "outputs_tcn_2026-05-01-19-00-15",
   "architecture": "tcn",
   "sample_rate": 44100,
   "channels": 1,
