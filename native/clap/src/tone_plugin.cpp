@@ -1054,7 +1054,6 @@ struct AmountSnapshot {
     float out_lvl_wet, out_lvl_target_lufs;
     float autoeq_wet_mix;
     int   autoeq_cls_idx;
-    float eq_band_offsets[5];
     float sat_pre_db, sat_post_db, sat_wet_mix, sat_hpf_hz, sat_thresh_lin, sat_bias;
     float trim_lin;
     float eq_range;
@@ -1069,7 +1068,6 @@ AmountSnapshot resolve_amount_(const Plugin& plug) {
     float olv=1.f,olt=-14.f;
     float eqr=1.f,eqs=100.f,eqb=1.f;
     float ssc=0.f;
-    float eq_off[5]={};
     int   cls_idx=plug.active_autoeq_cls;
     for (size_t i=0;i<plug.meta->controls.size();++i) {
         const auto& c=plug.meta->controls[i];
@@ -1082,9 +1080,7 @@ AmountSnapshot resolve_amount_(const Plugin& plug) {
         else if(c.id=="CLS") cls_idx=static_cast<int>(std::lround(v));
         else if(c.id=="EQR") eqr=v; else if(c.id=="EQS") eqs=v;
         else if(c.id=="EQB") eqb=v;
-        else if(c.id=="EQ0") eq_off[0]=v; else if(c.id=="EQ1") eq_off[1]=v;
-        else if(c.id=="EQ2") eq_off[2]=v; else if(c.id=="EQ3") eq_off[3]=v;
-        else if(c.id=="EQ4") eq_off[4]=v; else if(c.id=="OLV") olv=v;
+        else if(c.id=="OLV") olv=v;
         else if(c.id=="OLT") olt=v;
         else if(c.id=="TRM") trm_db=v;
         else if(c.id=="SSC") ssc=v;
@@ -1097,7 +1093,6 @@ AmountSnapshot resolve_amount_(const Plugin& plug) {
     s.autoeq_wet_mix=eq*g_state->tone_meta.amt_autoeq.wet_mix_max;
     const int n_cls = static_cast<int>(g_state->tone_meta.auto_eq.class_order.size());
     s.autoeq_cls_idx = std::clamp(cls_idx, 0, n_cls > 0 ? n_cls - 1 : 0);
-    for(int b=0;b<5;++b) s.eq_band_offsets[b]=eq_off[b];
     s.trim_lin=std::pow(10.f,trm_db/20.f);
     s.eq_range=eqr;
     s.eq_boost_scale=eqb;

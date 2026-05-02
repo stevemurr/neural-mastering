@@ -152,51 +152,6 @@
       "skew": 1.0,
       "unit": "ms"
     },
-    "EQ0": {
-      "id": "EQ0",
-      "name": "EQ Low Shelf",
-      "min": -9.0,
-      "max": 9.0,
-      "default": 0.0,
-      "skew": 1.0,
-      "unit": "dB"
-    },
-    "EQ1": {
-      "id": "EQ1",
-      "name": "EQ 110 Hz",
-      "min": -9.0,
-      "max": 9.0,
-      "default": 0.0,
-      "skew": 1.0,
-      "unit": "dB"
-    },
-    "EQ2": {
-      "id": "EQ2",
-      "name": "EQ 1.1 kHz",
-      "min": -9.0,
-      "max": 9.0,
-      "default": 0.0,
-      "skew": 1.0,
-      "unit": "dB"
-    },
-    "EQ3": {
-      "id": "EQ3",
-      "name": "EQ 7 kHz",
-      "min": -9.0,
-      "max": 9.0,
-      "default": 0.0,
-      "skew": 1.0,
-      "unit": "dB"
-    },
-    "EQ4": {
-      "id": "EQ4",
-      "name": "EQ High Shelf",
-      "min": -9.0,
-      "max": 9.0,
-      "default": 0.0,
-      "skew": 1.0,
-      "unit": "dB"
-    },
     "OLV": {
       "id": "OLV",
       "name": "Out Leveler",
