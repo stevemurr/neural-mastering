@@ -210,7 +210,7 @@
 
   /* ── Spectrum view ───────────────────────────────────────── */
   #spectrum-view {
-    height: 110px;
+    height: 160px;
     flex-shrink: 0;
     background: #0d0d0d;
     border-bottom: 1px solid var(--border);
@@ -220,7 +220,7 @@
   #spectrum-canvas {
     display: block;
     width: 676px;
-    height: 98px;
+    height: 148px;
   }
   #eq-view-toggle {
     position: absolute;
@@ -311,7 +311,7 @@
   </div>
   <div id="chain"></div>
   <div id="spectrum-view">
-    <canvas id="spectrum-canvas" width="676" height="98"></canvas>
+    <canvas id="spectrum-canvas" width="676" height="148"></canvas>
     <button id="eq-view-toggle" title="Toggle EQ view">
       <span id="eq-view-curve" class="active">CURVE</span><span id="eq-view-bins">BINS</span>
     </button>
@@ -329,12 +329,10 @@
 
 const PROCESSORS = [
   { id: 0, name: 'IN LEVEL',  params: ['LVL', 'LVT'],              wetParams: ['LVL'] },
-  { id: 1, name: 'AUTO EQ',   params: ['CLS', 'EQ', 'EQR', 'EQS', 'EQ0','EQ1','EQ2','EQ3','EQ4'], wetParams: ['EQ'] },
+  { id: 1, name: 'AUTO EQ',   params: ['CLS', 'EQ', 'EQR', 'EQB', 'EQS', 'EQ0','EQ1','EQ2','EQ3','EQ4'], wetParams: ['EQ'] },
   { id: 2, name: 'SATURATOR', params: ['SDR', 'SVO', 'SMX', 'SHF', 'STH', 'SBS'], wetParams: ['SMX'] },
-  { id: 3, name: 'COMPRESSOR',params: ['C_L', 'CMP'],              wetParams: ['CMP'] },
-  { id: 4, name: 'OUT LEVEL', params: ['OLV', 'OLT'],              wetParams: ['OLV'] },
-  { id: 5, name: 'SPATIAL D', params: ['SPW', 'SPR', 'SPD'],       wetParams: ['SPW'] },
-  { id: 6, name: 'BUS COMP',  params: ['SSC'],                     wetParams: ['SSC'] },
+  { id: 3, name: 'OUT LEVEL', params: ['OLV', 'OLT'],              wetParams: ['OLV'] },
+  { id: 4, name: 'BUS COMP',  params: ['SSC'],                     wetParams: ['SSC'] },
 ];
 
 // Runtime state
@@ -798,13 +796,19 @@ window.toneInit = function(state) {
     20 * Math.pow(1000, i / (N_BINS - 1)));
 
   // EQ view mode: 'curve' (biquad approximation) or 'bins' (actual SpectralMask bins).
-  let eqViewMode = 'curve';
+  let eqViewMode = localStorage.getItem('eqViewMode') || 'bins';
 
   const toggleBtn  = document.getElementById('eq-view-toggle');
   const curveLabel = document.getElementById('eq-view-curve');
   const binsLabel  = document.getElementById('eq-view-bins');
+
+  // Apply persisted/default mode to toggle UI immediately.
+  curveLabel.classList.toggle('active', eqViewMode === 'curve');
+  binsLabel.classList.toggle('active',  eqViewMode === 'bins');
+
   toggleBtn.addEventListener('click', () => {
     eqViewMode = eqViewMode === 'curve' ? 'bins' : 'curve';
+    localStorage.setItem('eqViewMode', eqViewMode);
     curveLabel.classList.toggle('active', eqViewMode === 'curve');
     binsLabel.classList.toggle('active',  eqViewMode === 'bins');
   });
@@ -814,12 +818,10 @@ window.toneInit = function(state) {
     '#4cc9a8',  // 0 InputLeveler
     '#e9c46a',  // 1 AutoEQ
     '#f4a261',  // 2 Saturator
-    '#e76f51',  // 3 Compressor
-    '#5fa8d3',  // 4 OutputLeveler
-    '#a8dadc',  // 5 SpatialD
-    '#bb86fc',  // 6 SslComp (BUS COMP)
+    '#5fa8d3',  // 3 OutputLeveler
+    '#bb86fc',  // 4 SslComp (BUS COMP)
   ];
-  const STAGE_NAMES = ['LEVELER', 'AUTO EQ', 'SAT', 'COMP', 'OUT LEV', 'SPATIAL'];
+  const STAGE_NAMES = ['LEVELER', 'AUTO EQ', 'SAT', 'OUT LEV', 'BUS COMP'];
 
   const DB_MIN = -90, DB_MAX = 0;
 
@@ -956,6 +958,17 @@ window.toneInit = function(state) {
       for (let i = 0; i < N_BINS; i++)
         i === 0 ? ctx.moveTo(bxs[i], bys[i]) : ctx.lineTo(bxs[i], bys[i]);
       ctx.stroke();
+      ctx.restore();
+
+      // Dots at each of the 50 sample points.
+      ctx.save();
+      for (let i = 0; i < N_BINS; i++) {
+        const above = bys[i] <= CY;
+        ctx.fillStyle = above ? 'rgba(76, 201, 168, 0.90)' : 'rgba(231, 111, 81, 0.90)';
+        ctx.beginPath();
+        ctx.arc(bxs[i], bys[i], 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.restore();
 
       ctx.setLineDash([]);

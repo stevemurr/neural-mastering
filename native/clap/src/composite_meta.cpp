@@ -81,11 +81,6 @@ CompositeMeta load_composite_meta(const std::string& path) {
     m.amt_sat.post_gain_db_max = sat.at("post_gain_db_max").get<float>();
     m.amt_sat.wet_mix_max      = sat.at("wet_mix_max").get<float>();
 
-    const auto& la2a = am.at("la2a");
-    m.amt_la2a.peak_reduction_min = la2a.at("peak_reduction_min").get<float>();
-    m.amt_la2a.peak_reduction_max = la2a.at("peak_reduction_max").get<float>();
-    m.amt_la2a.comp_or_limit      = la2a.value("comp_or_limit", 1.0f);
-
     const auto& aeq = am.at("auto_eq");
     m.amt_autoeq.wet_mix_max = aeq.at("wet_mix_max").get<float>();
 

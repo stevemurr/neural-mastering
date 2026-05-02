@@ -136,6 +136,9 @@ public:
     void set_range_norm(float r) {
         range_norm_ = std::clamp(r, 0.0f, 1.0f);
     }
+    void set_boost_scale(float s) {
+        boost_scale_ = std::clamp(s, 0.0f, 1.0f);
+    }
 
     // Runtime control: time constant (ms) for the per-block bin-gain smoother.
     // ~5 ms = snappy / transient-tracking; ~200 ms = slow / mastering-style.
@@ -163,7 +166,8 @@ public:
             float g = params[b];
             if (g < 0.0f) g = 0.0f;
             if (g > 1.0f) g = 1.0f;
-            band_db[b] = (cfg_.min_gain_db + g * gain_span) * range_norm_;
+            float db = (cfg_.min_gain_db + g * gain_span) * range_norm_;
+            band_db[b] = db > 0.f ? db * boost_scale_ : db;
         }
         // Refresh the smoother's alpha if the user moved the Speed knob.
         if (speed_tau_ms_ != speed_tau_cached_) recompute_alpha_();
@@ -493,6 +497,7 @@ private:
     float              mask_smooth_alpha_{0.f};  // per-set_params time decay
     // Runtime knobs.
     float              range_norm_{1.0f};        // [0, 1] scale on predicted band_db
+    float              boost_scale_{1.0f};       // [0, 1] asymmetric boost attenuation (1 = symmetric)
     float              speed_tau_ms_{25.0f};     // user-set time constant
     float              speed_tau_cached_{-1.f};  // last value alpha was computed at
     // Ragged 1/6-octave Gaussian kernel: per output bin k, the apply loop

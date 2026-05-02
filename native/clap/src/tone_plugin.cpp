@@ -79,7 +79,7 @@ using nablafx::param_id_for;
 // processor's TVFiLM cond_block_size. Changing this requires re-exporting both
 // ONNX bundles at the new block size.
 constexpr int kBlockSize  = 128;
-constexpr int kNumStages  = 7;
+constexpr int kNumStages  = 5;
 // SSL bus comp accumulator size — must be a multiple of kBlockSize. Larger
 // values cut CPU proportionally (1 ORT call per kSslHop samples instead of
 // 1 per kBlockSize) at the cost of (kSslHop - kBlockSize) extra latency.
@@ -97,10 +97,8 @@ enum class StageID : int {
     InputLeveler  = 0,
     AutoEQ        = 1,
     Saturator     = 2,
-    Compressor    = 3,
-    OutputLeveler = 4,
-    SpatialD      = 5,
-    SslComp       = 6,
+    OutputLeveler = 3,
+    SslComp       = 4,
 };
 
 // ---------------------------------------------------------------------------
@@ -294,7 +292,6 @@ struct ModuleState {
     std::vector<PluginMeta>                              autoeq_metas;
     std::unordered_map<std::string, std::size_t>         autoeq_class_index;
     PluginMeta                 sat_meta;
-    PluginMeta                 la2a_meta;
     PluginMeta                 ssl_comp_meta;          // optional; loaded if
                                                        // tone_meta.sub_bundles
                                                        // has "ssl_comp"
@@ -585,7 +582,6 @@ struct ChannelChain {
     float sat_hpf_fc{-1.f};               // cached cutoff; -1 = stale
     float sat_hpf_b0{0.f}, sat_hpf_b1{0.f}, sat_hpf_a1{0.f};
     float sat_hpf_x1{0.f}, sat_hpf_y1{0.f};
-    std::unique_ptr<OrtMiniSession>        la2a_ort;
     // SSL-style bus comp (separate stage from LA-2A). Stateless long-RF
     // causal TCN: needs a trace_len-sized input ring per channel because the
     // ORT call expects all RF samples of context per invocation. Allocated
@@ -648,7 +644,7 @@ struct Plugin {
     float                autoeq_env_decay{0.f};
 
     // Processor ordering — driven by GUI drag-and-drop.
-    std::array<int, kNumStages> processor_order{0, 1, 2, 3, 4, 5, 6};
+    std::array<int, kNumStages> processor_order{0, 1, 2, 3, 4};
 
     // Active auto-EQ class index (into ModuleState::autoeq_metas /
     // tone_meta.auto_eq.class_order). Updated from the audio thread when the
@@ -663,7 +659,7 @@ struct Plugin {
     // GUI → audio-thread order change.
     std::mutex               order_mutex;
     bool                     order_pending{false};
-    std::array<int,kNumStages> pending_order{0,1,2,3,4,5,6};
+    std::array<int,kNumStages> pending_order{0,1,2,3,4};
 
     // CLAP GUI handle (main thread only).
     ToneGUIState* gui_state{nullptr};
@@ -674,7 +670,6 @@ struct Plugin {
     // Shared levelers — input and output, both apply linked L/R gain.
     LufsLeveler              leveler;
     LufsLeveler              out_leveler;
-    DimensionD               dimension_d;
     std::vector<ChannelChain> chains;
 };
 
@@ -886,8 +881,6 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
     });
     plug->out_leveler.reset(sample_rate, g_state->tone_meta.leveler.target_lufs);
 
-    plug->dimension_d.reset(sample_rate, /*rate_hz=*/0.8, /*depth_norm=*/0.5);
-
     // Seed active class from CLS control; clamp to a valid class index.
     {
         const auto& classes = g_state->tone_meta.auto_eq.class_order;
@@ -939,12 +932,6 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
         }
         ch.saturator.reset(g_state->sat_rational.numerator,
                            g_state->sat_rational.denominator);
-
-        ch.la2a_ort = std::make_unique<OrtMiniSession>(
-            *g_state->ort_env,
-            g_state->resources_dir + "/" + g_state->tone_meta.sub_bundles.at("la2a")
-                + "/model.onnx",
-            g_state->la2a_meta);
 
         if (g_state->ssl_comp_loaded && g_state->ssl_comp_meta.trace_len > 0) {
             const int N  = g_state->ssl_comp_meta.trace_len;
@@ -1014,12 +1001,10 @@ static void plugin_reset(const clap_plugin_t* p) {
     auto* plug = static_cast<Plugin*>(p->plugin_data);
     plug->leveler.reset(plug->sample_rate, g_state->tone_meta.leveler.target_lufs);
     plug->out_leveler.reset(plug->sample_rate, g_state->tone_meta.leveler.target_lufs);
-    plug->dimension_d.reset(plug->sample_rate, /*rate_hz=*/0.8, /*depth_norm=*/0.5);
     for (auto& ch : plug->chains) {
         for (auto& s : ch.autoeq_ort_per_class) {
             if (s) s->reset_state();
         }
-        if (ch.la2a_ort)   ch.la2a_ort->reset_state();
         ch.ceiling.reset(plug->sample_rate);
         ch.autoeq_smoothed_params.fill(0.5f);
         ch.in_fill   = 0;
@@ -1044,19 +1029,18 @@ struct AmountSnapshot {
     int   autoeq_cls_idx;
     float eq_band_offsets[5];
     float sat_pre_db, sat_post_db, sat_wet_mix, sat_hpf_hz, sat_thresh_lin, sat_bias;
-    float la2a_wet, la2a_pr_norm, la2a_comp_or_limit;
-    float sp_wet, sp_rate, sp_depth;
     float trim_lin;
     float eq_range;
+    float eq_boost_scale;
     float eq_speed_ms;
     float ssl_comp_wet;
 };
 
 AmountSnapshot resolve_amount_(const Plugin& plug) {
     float lvl=1.f,lvt=-14.f,sdr=0.f,svo=0.f,smx=0.5f,shf=20.f,sth=0.f,sbs=0.f;
-    float cl=1.f,cmp=50.f,eq=0.5f,trm_db=0.f;
-    float olv=1.f,olt=-14.f,spw=0.f,spr=0.8f,spd=0.5f;
-    float eqr=1.f,eqs=100.f;
+    float eq=0.5f,trm_db=0.f;
+    float olv=1.f,olt=-14.f;
+    float eqr=1.f,eqs=100.f,eqb=1.f;
     float ssc=0.f;
     float eq_off[5]={};
     int   cls_idx=plug.active_autoeq_cls;
@@ -1067,32 +1051,29 @@ AmountSnapshot resolve_amount_(const Plugin& plug) {
         else if(c.id=="SDR") sdr=v; else if(c.id=="SVO") svo=v;
         else if(c.id=="SMX") smx=v; else if(c.id=="SHF") shf=v;
         else if(c.id=="STH") sth=v; else if(c.id=="SBS") sbs=v;
-        else if(c.id=="C_L") cl=v;
-        else if(c.id=="CMP") cmp=v; else if(c.id=="EQ")  eq=v;
+        else if(c.id=="EQ")  eq=v;
         else if(c.id=="CLS") cls_idx=static_cast<int>(std::lround(v));
         else if(c.id=="EQR") eqr=v; else if(c.id=="EQS") eqs=v;
+        else if(c.id=="EQB") eqb=v;
         else if(c.id=="EQ0") eq_off[0]=v; else if(c.id=="EQ1") eq_off[1]=v;
         else if(c.id=="EQ2") eq_off[2]=v; else if(c.id=="EQ3") eq_off[3]=v;
         else if(c.id=="EQ4") eq_off[4]=v; else if(c.id=="OLV") olv=v;
-        else if(c.id=="OLT") olt=v; else if(c.id=="SPW") spw=v;
-        else if(c.id=="SPR") spr=v; else if(c.id=="SPD") spd=v;
+        else if(c.id=="OLT") olt=v;
         else if(c.id=="TRM") trm_db=v;
         else if(c.id=="SSC") ssc=v;
     }
     AmountSnapshot s{};
     s.lvl_wet=lvl; s.lvl_target_lufs=lvt;
     s.out_lvl_wet=olv; s.out_lvl_target_lufs=olt;
-    s.sp_wet=spw; s.sp_rate=spr; s.sp_depth=spd;
     s.sat_pre_db=sdr; s.sat_post_db=svo; s.sat_wet_mix=smx; s.sat_hpf_hz=shf;
     s.sat_thresh_lin=std::pow(10.f, sth/20.f); s.sat_bias=sbs;
     s.autoeq_wet_mix=eq*g_state->tone_meta.amt_autoeq.wet_mix_max;
     const int n_cls = static_cast<int>(g_state->tone_meta.auto_eq.class_order.size());
     s.autoeq_cls_idx = std::clamp(cls_idx, 0, n_cls > 0 ? n_cls - 1 : 0);
     for(int b=0;b<5;++b) s.eq_band_offsets[b]=eq_off[b];
-    s.la2a_wet=cmp/100.f; s.la2a_pr_norm=cmp/100.f;
-    s.la2a_comp_or_limit=cl;
     s.trim_lin=std::pow(10.f,trm_db/20.f);
     s.eq_range=eqr;
+    s.eq_boost_scale=eqb;
     s.eq_speed_ms=eqs;
     s.ssl_comp_wet = ssc * g_state->tone_meta.amt_ssl_comp.wet_mix_max;
     return s;
@@ -1192,6 +1173,7 @@ void flush_chain_block_(Plugin& plug,
                     // applied inside set_params on each tick.
                     auto& dsp = plug.chains[ch].autoeq_spec_per_class[cls];
                     dsp->set_range_norm(amt.eq_range);
+                    dsp->set_boost_scale(amt.eq_boost_scale);
                     dsp->set_speed_tau_ms(amt.eq_speed_ms);
                     dsp->set_params(eq_params, n_params);
                     dsp->process(blk, wet_a.data(), kBlockSize);
@@ -1225,6 +1207,7 @@ void flush_chain_block_(Plugin& plug,
                     for (int b = 0; b < 5; ++b) {
                         float gain_db = kGainMin + final_params[kGainCh[b]] * kGainSpan;
                         gain_db = gain_db * amt.eq_range + amt.eq_band_offsets[b];
+                        if (gain_db > 0.f) gain_db *= amt.eq_boost_scale;
                         gain_db = std::clamp(gain_db, kGainMin, kGainMin + kGainSpan);
                         final_params[kGainCh[b]] = (gain_db - kGainMin) / kGainSpan;
                     }
@@ -1298,24 +1281,6 @@ void flush_chain_block_(Plugin& plug,
                     }
                     blend_(blk, dry.data(), wet_a.data(), amt.sat_wet_mix, kBlockSize);
                 }
-            }
-            break;
-        }
-
-        case StageID::Compressor: {
-            // LA-2A LSTM: per-block call, ORT receives kBlockSize samples
-            // and carries context via the LSTM hidden state.
-            std::array<float,2> la2a_ctl{amt.la2a_comp_or_limit,amt.la2a_pr_norm};
-            float* ch_buf[2]={work_l,work_r};
-            for (uint32_t ch=0;ch<n_ch;++ch) {
-                float* blk=ch_buf[ch];
-                std::copy_n(blk,kBlockSize,dry.data());
-                plug.chains[ch].la2a_ort->run(blk, kBlockSize,
-                    wet_a.data(), kBlockSize,
-                    la2a_ctl.data(), 2, "audio_out");
-                plug.chains[ch].la2a_ort->swap_state();
-                blend_inplace_(wet_a.data(),dry.data(),1.f-amt.la2a_wet,kBlockSize);
-                std::copy_n(wet_a.data(),kBlockSize,blk);
             }
             break;
         }
@@ -1447,16 +1412,6 @@ void flush_chain_block_(Plugin& plug,
             break;
         }
 
-        case StageID::SpatialD: {
-            if (amt.sp_wet <= 0.f || n_ch < 2) break;
-            std::array<float,kBlockSize> sp_l{},sp_r{};
-            plug.dimension_d.set_params(static_cast<double>(amt.sp_rate),
-                                         static_cast<double>(amt.sp_depth));
-            plug.dimension_d.process(work_l,work_r,sp_l.data(),sp_r.data(),kBlockSize);
-            blend_inplace_(work_l,sp_l.data(),amt.sp_wet,kBlockSize);
-            blend_inplace_(work_r,sp_r.data(),amt.sp_wet,kBlockSize);
-            break;
-        }
         } // switch
 
         // Capture stage output for the spectrum analyzer.
@@ -1803,9 +1758,6 @@ static bool entry_init(const char* /*plugin_path*/) {
         st->tone_meta = load_composite_meta(st->resources_dir + "/tone_meta.json");
         st->sat_meta    = load_meta(st->resources_dir + "/" +
                                     st->tone_meta.sub_bundles.at("saturator")
-                                    + "/plugin_meta.json");
-        st->la2a_meta   = load_meta(st->resources_dir + "/" +
-                                    st->tone_meta.sub_bundles.at("la2a")
                                     + "/plugin_meta.json");
         // SSL bus comp is optional — older bundles don't ship it. If present,
         // load its meta so we can size per-channel ring buffers at activate.
