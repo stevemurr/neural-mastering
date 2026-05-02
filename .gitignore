@@ -5,6 +5,10 @@ native/clap/build/
 *.dylib
 *.clap
 
+# tone_bench transient outputs (baseline.json is committed)
+native/clap/bench/last_run.json
+native/clap/bench/last_run.md
+
 # Python
 __pycache__/
 *.py[cod]
