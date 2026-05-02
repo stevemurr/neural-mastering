@@ -4,15 +4,15 @@ compile: false
 dataset_root: /shared/datasets
 data:
   _target_: nablafx.data.DryWetFilesPluginDataModule
-  root_dir_dry: ${dataset_root}/tone_auto_eq_musdb_vocals/DRY/trainval
-  root_dir_wet: ${dataset_root}/tone_auto_eq_musdb_vocals/WET/trainval
+  root_dir_dry: ${dataset_root}/tone_auto_eq_musdb_vocals_aug/DRY/trainval
+  root_dir_wet: ${dataset_root}/tone_auto_eq_musdb_vocals_aug/WET/trainval
   params_idxs_to_use: null
   data_to_use: 1.0
   trainval_split: 0.9
   sample_length: 132300
   sample_rate: 44100
   preload: true
-  batch_size: 64
+  batch_size: 8
   num_workers: 4
   persistent_workers: true
 model:
@@ -23,23 +23,25 @@ model:
   model:
     _target_: nablafx.GreyBoxModel
     processors:
-    - _target_: nablafx.processors.ParametricEQ
+    - _target_: nablafx.processors.SpectralMaskEQ
       sample_rate: 44100
-      min_gain_db: -9.0
-      max_gain_db: 9.0
-      min_q_factor: 0.5
-      max_q_factor: 2.0
+      n_bands: 64
+      n_fft: 4096
+      hop: 2048
+      min_gain_db: -18.0
+      max_gain_db: 18.0
       block_size: 128
-      control_type: dynamic
-      freeze_freqs: true
+      control_type: dynamic-spectral
     num_controls: 0
     stat_control_params_initial: rnd
     stat_cond_num_layers: 3
     stat_cond_hidden_dim: 16
     dyn_block_size: 128
-    dyn_num_layers: 1
+    dyn_num_layers: 2
     dyn_cond_block_size: 128
     dyn_cond_num_layers: 1
+    dyn_spectral_hidden_dim: 64
+    dyn_spectral_feat_dim: 32
   loss:
     _target_: nablafx.evaluation.FlexibleLoss
     losses:
@@ -49,9 +51,6 @@ model:
     - name: mrstft_loss
       weight: 0.67
       alias: mrstft
-  lr_schedule: cosine_warmup
-  lr_warmup_steps: 200
-  lr_min: 0.0001
 trainer:
   logger:
     _target_: lightning.pytorch.loggers.CSVLogger
