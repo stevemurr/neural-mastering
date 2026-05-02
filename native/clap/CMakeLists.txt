@@ -41,7 +41,7 @@ target_link_libraries(nablafx_clap PRIVATE
 
 # Composite TONE plugin: separate dylib that bundles auto-EQ + saturator +
 # LA-2A behind a single AMT/TRM control surface, with the LUFS leveler and
-# true-peak ceiling running in-host. parametric_eq_5band.hpp + rational_a.hpp
+# true-peak ceiling running in-host. spectral_mask_eq.hpp + rational_a.hpp
 # are header-only so they don't appear in the source list.
 add_library(tone_clap MODULE
     src/tone_plugin.cpp

@@ -136,8 +136,6 @@ def _build_default_meta(
                 "default": float(default_idx), "skew": 1.0, "unit": "enum"},
         "EQ":  {"id": "EQ",  "name": "Auto EQ",     "min": 0.0,   "max": 1.0,
                 "default": 0.0, "skew": 1.0, "unit": ""},
-        # EQR / EQS only have an effect when the active class routes through a
-        # spectral_mask_eq DSP block; they are no-ops on parametric_eq_5band.
         "EQR": {"id": "EQR", "name": "EQ Range",    "min": 0.0,   "max": 1.0,
                 "default": 1.0, "skew": 1.0, "unit": ""},
         "EQS": {"id": "EQS", "name": "EQ Speed",    "min": 10.0,  "max": 500.0,
@@ -209,28 +207,6 @@ def _check_sub_bundle(bundle_dir: Path, expected_kind: str, expected_block_kind:
     return meta
 
 
-def _peq_layout_signature(meta: Dict[str, Any]) -> Tuple:
-    """Stable hashable signature of the PEQ DSP block (sample_rate, block_size,
-    band freq + range geometry). Used to assert that all auto-EQ class bundles
-    share the same downstream filter cascade."""
-    block = (meta.get("dsp_blocks") or [None])[0]
-    if not block:
-        raise ValueError("auto_eq sub-bundle has no dsp_blocks")
-    p = block.get("params", {})
-    sig = [p.get("sample_rate"), p.get("block_size"), p.get("num_control_params")]
-    for b in p.get("bands", []):
-        sig.append((
-            b.get("name"),
-            b.get("kind"),
-            b.get("cutoff_freq"),
-            tuple(b.get("gain_db_range", ())),
-            tuple(b.get("q_range", ())),
-            (b.get("param_channels", {}).get("gain"),
-             b.get("param_channels", {}).get("q")),
-        ))
-    return tuple(sig)
-
-
 def export_composite_bundle(
     auto_eq_bundles: Mapping[str, Path],
     saturator_bundle: Path,
@@ -245,7 +221,7 @@ def export_composite_bundle(
 
     ``auto_eq_bundles`` is a mapping of class name → directory holding a
     ``nablafx-export`` bundle for that class's controller+DSP. All classes must
-    share the same PEQ DSP layout.
+    share the same SpectralMaskEQ geometry.
     """
     if not auto_eq_bundles:
         raise ValueError("auto_eq_bundles must contain at least one class")
@@ -276,44 +252,31 @@ def export_composite_bundle(
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Validate every auto-EQ sub-bundle. Mixed kinds across classes are allowed
-    # — the runtime dispatches per class based on dsp_blocks[0].kind. Within a
-    # given kind we still confirm geometry homogeneity so the runtime can
-    # dispatch without per-class layout assertions.
+    # Validate every auto-EQ sub-bundle. All classes must declare
+    # spectral_mask_eq with identical geometry so the runtime can dispatch
+    # without per-class layout assertions.
     autoeq_metas: Dict[str, Dict[str, Any]] = {}
-    canonical_sig_by_kind: Dict[str, Tuple] = {}
-    canonical_cls_by_kind: Dict[str, str] = {}
+    canonical_sig: Optional[Tuple] = None
+    canonical_cls: Optional[str] = None
     for cls, p in auto_eq_paths.items():
-        m = _check_sub_bundle(p, expected_kind="nn+dsp")
+        m = _check_sub_bundle(p, expected_kind="nn+dsp",
+                              expected_block_kind="spectral_mask_eq")
         blocks = m.get("dsp_blocks") or []
-        if not blocks:
-            raise ValueError(f"{p}: no dsp_blocks in auto_eq sub-bundle meta")
-        kind = blocks[0].get("kind")
-        if kind not in ("parametric_eq_5band", "spectral_mask_eq"):
+        p_ = blocks[0].get("params", {})
+        sig = (
+            p_.get("sample_rate"), p_.get("block_size"),
+            p_.get("num_control_params"), p_.get("n_fft"),
+            p_.get("hop"), p_.get("n_bands"),
+            p_.get("min_gain_db"), p_.get("max_gain_db"),
+            p_.get("f_min"), p_.get("f_max"),
+        )
+        if canonical_sig is None:
+            canonical_sig = sig
+            canonical_cls = cls
+        elif sig != canonical_sig:
             raise ValueError(
-                f"{p}: auto_eq dsp_blocks[0].kind={kind!r} is not supported "
-                "(expected parametric_eq_5band or spectral_mask_eq)"
-            )
-        if kind == "parametric_eq_5band":
-            sig = _peq_layout_signature(m)
-        else:
-            # Spectral mask: hash the geometry so all spectral classes agree.
-            p_ = blocks[0].get("params", {})
-            sig = (
-                p_.get("sample_rate"), p_.get("block_size"),
-                p_.get("num_control_params"), p_.get("n_fft"),
-                p_.get("hop"), p_.get("n_bands"),
-                p_.get("min_gain_db"), p_.get("max_gain_db"),
-                p_.get("f_min"), p_.get("f_max"),
-            )
-        if kind not in canonical_sig_by_kind:
-            canonical_sig_by_kind[kind] = sig
-            canonical_cls_by_kind[kind] = cls
-        elif sig != canonical_sig_by_kind[kind]:
-            raise ValueError(
-                f"auto_eq class {cls!r} ({kind}) layout differs from "
-                f"{canonical_cls_by_kind[kind]!r}; classes sharing a kind "
-                "must share geometry."
+                f"auto_eq class {cls!r} layout differs from "
+                f"{canonical_cls!r}; classes must share geometry."
             )
         autoeq_metas[cls] = m
 

@@ -33,26 +33,6 @@ struct RationalAParams {
     std::vector<float> denominator;
 };
 
-// 5-band parametric EQ: gain/Q come from the controller's ONNX output every
-// `block_size` samples (sigmoid in [0, 1]); the C++ side denormalizes via
-// per-band ranges and runs a fixed-frequency biquad cascade.
-struct ParametricEq5BandParams {
-    enum class Kind { LowShelf, Peaking, HighShelf };
-    struct Band {
-        std::string name;
-        Kind        kind;
-        float       cutoff_freq;       // Hz — fixed (freeze_freqs=true)
-        float       gain_db_min, gain_db_max;
-        float       q_min, q_max;
-        int         ch_gain;           // index into the [num_control_params] vector
-        int         ch_q;
-    };
-    int               sample_rate;
-    int               block_size;      // ONNX call cadence
-    int               num_control_params;
-    std::vector<Band> bands;
-};
-
 // STFT-domain magnitude-mask EQ. Controller emits ``n_bands`` sigmoid values
 // per block; the C++ runtime computes the mel filterbank from the geometry
 // parameters (sample_rate, n_fft, n_bands, f_min, f_max) and applies the mask
@@ -70,10 +50,10 @@ struct SpectralMaskEqParams {
     float f_max;
 };
 
-using DspBlockParams = std::variant<RationalAParams, ParametricEq5BandParams, SpectralMaskEqParams>;
+using DspBlockParams = std::variant<RationalAParams, SpectralMaskEqParams>;
 
 struct DspBlockSpec {
-    std::string    kind;   // "rational_a" | "parametric_eq_5band" | "spectral_mask_eq"
+    std::string    kind;   // "rational_a" | "spectral_mask_eq"
     std::string    name;
     DspBlockParams params;
 };

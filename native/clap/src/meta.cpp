@@ -19,13 +19,6 @@ StageKind parse_stage_kind(const std::string& s) {
     throw std::runtime_error("unknown stage_kind: " + s);
 }
 
-ParametricEq5BandParams::Kind parse_band_kind(const std::string& s) {
-    if (s == "low_shelf")  return ParametricEq5BandParams::Kind::LowShelf;
-    if (s == "peaking")    return ParametricEq5BandParams::Kind::Peaking;
-    if (s == "high_shelf") return ParametricEq5BandParams::Kind::HighShelf;
-    throw std::runtime_error("unknown EQ band kind: " + s);
-}
-
 DspBlockSpec parse_dsp_block(const json& j) {
     DspBlockSpec out;
     out.kind = j.at("kind").get<std::string>();
@@ -42,28 +35,6 @@ DspBlockSpec parse_dsp_block(const json& j) {
         r.numerator   = p.at("numerator").get<std::vector<float>>();
         r.denominator = p.at("denominator").get<std::vector<float>>();
         out.params = std::move(r);
-    } else if (out.kind == "parametric_eq_5band") {
-        ParametricEq5BandParams eq;
-        eq.sample_rate        = p.at("sample_rate").get<int>();
-        eq.block_size         = p.at("block_size").get<int>();
-        eq.num_control_params = p.at("num_control_params").get<int>();
-        for (const auto& b : p.at("bands")) {
-            ParametricEq5BandParams::Band band;
-            band.name        = b.at("name").get<std::string>();
-            band.kind        = parse_band_kind(b.at("kind").get<std::string>());
-            band.cutoff_freq = b.at("cutoff_freq").get<float>();
-            const auto& g    = b.at("gain_db_range");
-            band.gain_db_min = g.at(0).get<float>();
-            band.gain_db_max = g.at(1).get<float>();
-            const auto& q    = b.at("q_range");
-            band.q_min       = q.at(0).get<float>();
-            band.q_max       = q.at(1).get<float>();
-            const auto& ch   = b.at("param_channels");
-            band.ch_gain     = ch.at("gain").get<int>();
-            band.ch_q        = ch.at("q").get<int>();
-            eq.bands.push_back(std::move(band));
-        }
-        out.params = std::move(eq);
     } else if (out.kind == "spectral_mask_eq") {
         SpectralMaskEqParams sm;
         sm.sample_rate        = p.at("sample_rate").get<int>();

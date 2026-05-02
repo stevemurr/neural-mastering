@@ -1,6 +1,6 @@
 // Composite TONE CLAP plugin: 1 dylib that wires
 //
-//   audio → LufsLeveler → ort(autoeq controller) → ParametricEq5Band
+//   audio → LufsLeveler → ort(autoeq controller) → SpectralMaskEq
 //                       → RationalA (saturator)  → ort(la2a)
 //                       → TruePeakCeiling → output trim
 //
@@ -50,7 +50,6 @@
 #include "lufs_leveler.hpp"
 #include "meta.hpp"
 #include "param_id.hpp"
-#include "parametric_eq_5band.hpp"
 #include "rational_a.hpp"
 #include "spectral_mask_eq.hpp"
 #include "true_peak_ceiling.hpp"
@@ -62,8 +61,6 @@ using nablafx::CompositeMeta;
 using nablafx::ControlSpec;
 using nablafx::DspBlockSpec;
 using nablafx::LufsLeveler;
-using nablafx::ParametricEq5Band;
-using nablafx::ParametricEq5BandParams;
 using nablafx::PluginMeta;
 using nablafx::RationalA;
 using nablafx::RationalAParams;
@@ -306,10 +303,9 @@ struct ModuleState {
     std::unique_ptr<Ort::Env>  ort_env;
     // Pulled out of sat_meta once at load.
     RationalAParams            sat_rational;
-    // Per-class DSP-block payload, parsed once at load. A class's bundle may
-    // declare either ``parametric_eq_5band`` or ``spectral_mask_eq`` as its
-    // dsp_blocks[0]; the variant lets the audio thread dispatch by kind
-    // without a string compare per block.
+    // Per-class DSP-block payload, parsed once at load. Every class declares
+    // ``spectral_mask_eq`` as its dsp_blocks[0]; held here so the audio
+    // thread can read num_control_params without re-parsing meta.
     std::vector<DspBlockSpec>  autoeq_dsp_per_class;
     int                        autoeq_default_idx{0};
 };
@@ -567,11 +563,9 @@ struct ChannelChain {
     // so a class switch starts the LSTM from a neutral init and avoids
     // bleeding stale activations from a different class's signal.
     std::vector<std::unique_ptr<OrtMiniSession>> autoeq_ort_per_class;
-    // Per-class DSP block. Exactly one of {peq, spec} is set per class index
-    // depending on the class meta's dsp_blocks[0].kind. Keeps mixed-kind
-    // multi-class working: e.g. CLS=full_mix can route through SpectralMaskEq
-    // while CLS=bass routes through ParametricEq5Band.
-    std::vector<std::unique_ptr<ParametricEq5Band>> autoeq_peq_per_class;
+    // Per-class SpectralMaskEq instance. Every class shares the same kind
+    // now, but each class still gets its own instance so the per-class
+    // mask-smoother state doesn't bleed across class switches.
     std::vector<std::unique_ptr<SpectralMaskEq>>    autoeq_spec_per_class;
     // Peak-hold envelope follower for auto-EQ controller input normalization.
     // Training normalized peak per ~10 s segment; using a per-128-block peak at
@@ -608,9 +602,6 @@ struct ChannelChain {
     std::vector<float>                     ssl_comp_dry_delay;
     int                                    ssl_comp_dry_write{0};
     TruePeakCeiling                        ceiling;
-
-    // EMA-smoothed LSTM output params [0,1] — 15 channels, neutral at 0.5.
-    std::array<float, 15> autoeq_smoothed_params{};
 
     // 128-sample accumulator: kBlockSize input samples in, then a chain pass,
     // then kBlockSize output samples ready. Output ring fills before any reads
@@ -950,8 +941,6 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
         const auto& classes = g_state->tone_meta.auto_eq.class_order;
         ch.autoeq_ort_per_class.clear();
         ch.autoeq_ort_per_class.reserve(classes.size());
-        ch.autoeq_peq_per_class.clear();
-        ch.autoeq_peq_per_class.resize(classes.size());
         ch.autoeq_spec_per_class.clear();
         ch.autoeq_spec_per_class.resize(classes.size());
         for (size_t i = 0; i < classes.size(); ++i) {
@@ -962,22 +951,12 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
                 g_state->resources_dir + "/" + dir + "/model.onnx",
                 g_state->autoeq_metas[i]));
 
-            // Per-class DSP block instantiated according to the class meta's
-            // declared kind. Mixed-kind chains are valid (different classes
-            // can carry different EQ effectors).
+            // Every auto-EQ class declares spectral_mask_eq as its
+            // dsp_blocks[0]; meta.cpp throws if anything else slips through.
             const auto& dsp = g_state->autoeq_dsp_per_class[i];
-            if (dsp.kind == "parametric_eq_5band") {
-                ch.autoeq_peq_per_class[i] = std::make_unique<ParametricEq5Band>();
-                ch.autoeq_peq_per_class[i]->reset(
-                    std::get<ParametricEq5BandParams>(dsp.params));
-            } else if (dsp.kind == "spectral_mask_eq") {
-                ch.autoeq_spec_per_class[i] = std::make_unique<SpectralMaskEq>();
-                ch.autoeq_spec_per_class[i]->reset(
-                    std::get<SpectralMaskEqParams>(dsp.params));
-            } else {
-                throw std::runtime_error(
-                    "tone_plugin: unsupported auto_eq dsp kind: " + dsp.kind);
-            }
+            ch.autoeq_spec_per_class[i] = std::make_unique<SpectralMaskEq>();
+            ch.autoeq_spec_per_class[i]->reset(
+                std::get<SpectralMaskEqParams>(dsp.params));
         }
         ch.saturator.reset(g_state->sat_rational.numerator,
                            g_state->sat_rational.denominator);
@@ -1024,7 +1003,6 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
         ch.ceiling = TruePeakCeiling(tcfg);
         ch.ceiling.reset(sample_rate);
 
-        ch.autoeq_smoothed_params.fill(0.5f);
         ch.in_fill   = 0;
         ch.out_avail = 0;
         ch.out_read  = 0;
@@ -1056,7 +1034,6 @@ static void plugin_reset(const clap_plugin_t* p) {
             if (s) s->reset_state();
         }
         ch.ceiling.reset(plug->sample_rate);
-        ch.autoeq_smoothed_params.fill(0.5f);
         ch.in_fill   = 0;
         ch.out_avail = 0;
         ch.out_read  = 0;
@@ -1146,10 +1123,6 @@ void flush_chain_block_(Plugin& plug,
                         uint32_t n_ch,
                         const AmountSnapshot& amt) {
 
-    static constexpr int   kGainCh[5]  = {0,3,6,9,12};
-    static constexpr float kGainMin    = -9.f;
-    static constexpr float kGainSpan   = 18.f;
-
     std::array<float,kBlockSize> dry{}, wet_a{}, wet_b{};
 
     for (int pos = 0; pos < kNumStages; ++pos) {
@@ -1182,22 +1155,14 @@ void flush_chain_block_(Plugin& plug,
                     auto& s = chan.autoeq_ort_per_class[plug.active_autoeq_cls];
                     if (s) s->reset_state();
                     chan.autoeq_peak_env = 0.f;
-                    chan.autoeq_smoothed_params.fill(0.5f);
                 }
             }
             const int cls = plug.active_autoeq_cls;
-            // DSP kind varies per class (PEQ = 15 params, SpectralMask = 32).
             const auto& cls_dsp = g_state->autoeq_dsp_per_class[cls];
-            const bool  is_spec = (cls_dsp.kind == "spectral_mask_eq");
-            const int   n_params = is_spec
-                ? std::get<SpectralMaskEqParams>(cls_dsp.params).num_control_params
-                : std::get<ParametricEq5BandParams>(cls_dsp.params).num_control_params;
+            const int   n_params =
+                std::get<SpectralMaskEqParams>(cls_dsp.params).num_control_params;
             std::array<float, 64> eq_params_storage{};
             float* eq_params = eq_params_storage.data();
-            // EMA coefficient for speed control: fast (10 ms) ≈ 0.75, slow (500 ms) ≈ 0.994.
-            const float alpha = std::exp(
-                -static_cast<float>(kBlockSize) /
-                (static_cast<float>(plug.sample_rate) * amt.eq_speed_ms * 0.001f));
             float* ch_buf[2] = {work_l, work_r};
             for (uint32_t ch=0; ch<n_ch; ++ch) {
                 float* blk = ch_buf[ch];
@@ -1217,60 +1182,35 @@ void flush_chain_block_(Plugin& plug,
                 sess->swap_state();
 
                 std::copy_n(blk, kBlockSize, dry.data());
-                if (is_spec) {
-                    // Spectral mask: range scales the predicted dB curve toward
-                    // 0 dB; speed sets the bin-gain smoother time constant. Both
-                    // applied inside set_params on each tick.
-                    auto& dsp = plug.chains[ch].autoeq_spec_per_class[cls];
-                    dsp->set_range_norm(amt.eq_range);
-                    dsp->set_boost_scale(amt.eq_boost_scale);
-                    dsp->set_speed_tau_ms(amt.eq_speed_ms);
-                    dsp->set_params(eq_params, n_params);
-                    dsp->process(blk, wet_a.data(), kBlockSize);
-                    if (ch == 0) {
-                        // 5-point curve display (matches PEQ band centres).
-                        static constexpr float kDisplayHz[5] =
-                            {1010.f, 110.f, 1100.f, 7000.f, 10000.f};
-                        float gains5[5];
-                        dsp->sample_gains_db(kDisplayHz, gains5, 5);
-                        plug.spectrum.set_eq_gains(gains5);
-                        // 50-point bin display (log-spaced 20–20k Hz).
-                        static const std::array<float, SpectrumAnalyzer::kNumBins> kBinHz = []() {
-                            std::array<float, SpectrumAnalyzer::kNumBins> hz;
-                            for (int i = 0; i < SpectrumAnalyzer::kNumBins; ++i)
-                                hz[i] = 20.f * std::pow(1000.f,
-                                    float(i) / (SpectrumAnalyzer::kNumBins - 1));
-                            return hz;
-                        }();
-                        float gains50[SpectrumAnalyzer::kNumBins];
-                        dsp->sample_gains_db(kBinHz.data(), gains50,
-                                             SpectrumAnalyzer::kNumBins);
-                        plug.spectrum.set_eq_bins(gains50);
-                    }
-                } else {
-                    // PEQ: speed-smooth then range-scale, then manual offsets.
-                    auto& smoothed = plug.chains[ch].autoeq_smoothed_params;
-                    for (int p = 0; p < n_params; ++p)
-                        smoothed[p] = alpha * smoothed[p] + (1.f - alpha) * eq_params[p];
-                    std::array<float, 15> final_params;
-                    std::copy_n(smoothed.data(), n_params, final_params.data());
-                    for (int b = 0; b < 5; ++b) {
-                        float gain_db = kGainMin + final_params[kGainCh[b]] * kGainSpan;
-                        gain_db = gain_db * amt.eq_range + amt.eq_band_offsets[b];
-                        if (gain_db > 0.f) gain_db *= amt.eq_boost_scale;
-                        gain_db = std::clamp(gain_db, kGainMin, kGainMin + kGainSpan);
-                        final_params[kGainCh[b]] = (gain_db - kGainMin) / kGainSpan;
-                    }
-                    auto& dsp = plug.chains[ch].autoeq_peq_per_class[cls];
-                    dsp->set_params(final_params.data(), n_params);
-                    dsp->process(blk, wet_a.data(), kBlockSize);
-                    if (ch == 0) {
-                        float gains[5];
-                        for (int b = 0; b < 5; ++b)
-                            gains[b] = kGainMin + final_params[kGainCh[b]] * kGainSpan;
-                        plug.spectrum.set_eq_gains(gains);
-                        plug.spectrum.clear_eq_bins();
-                    }
+                // Spectral mask: range scales the predicted dB curve toward
+                // 0 dB; speed sets the bin-gain smoother time constant. Both
+                // applied inside set_params on each tick.
+                auto& dsp = plug.chains[ch].autoeq_spec_per_class[cls];
+                dsp->set_range_norm(amt.eq_range);
+                dsp->set_boost_scale(amt.eq_boost_scale);
+                dsp->set_speed_tau_ms(amt.eq_speed_ms);
+                dsp->set_params(eq_params, n_params);
+                dsp->process(blk, wet_a.data(), kBlockSize);
+                if (ch == 0) {
+                    // 5-point curve display at the historical PEQ band centres
+                    // so the GUI's curve overlay stays where users expect.
+                    static constexpr float kDisplayHz[5] =
+                        {1010.f, 110.f, 1100.f, 7000.f, 10000.f};
+                    float gains5[5];
+                    dsp->sample_gains_db(kDisplayHz, gains5, 5);
+                    plug.spectrum.set_eq_gains(gains5);
+                    // 50-point bin display (log-spaced 20–20k Hz).
+                    static const std::array<float, SpectrumAnalyzer::kNumBins> kBinHz = []() {
+                        std::array<float, SpectrumAnalyzer::kNumBins> hz;
+                        for (int i = 0; i < SpectrumAnalyzer::kNumBins; ++i)
+                            hz[i] = 20.f * std::pow(1000.f,
+                                float(i) / (SpectrumAnalyzer::kNumBins - 1));
+                        return hz;
+                    }();
+                    float gains50[SpectrumAnalyzer::kNumBins];
+                    dsp->sample_gains_db(kBinHz.data(), gains50,
+                                         SpectrumAnalyzer::kNumBins);
+                    plug.spectrum.set_eq_bins(gains50);
                 }
                 blend_(blk, dry.data(), wet_a.data(), amt.autoeq_wet_mix, kBlockSize);
             }
@@ -1835,10 +1775,10 @@ static bool entry_init(const char* /*plugin_path*/) {
         }
 
         // Load every auto-EQ class meta in the canonical class_order. All
-        // classes must share the same PEQ DSP block geometry (frozen freqs +
-        // identical ranges + identical channel layout), since the runtime
-        // ParametricEq5Band downstream is shared and only the controller ONNX
-        // is swapped on a class change.
+        // classes must declare spectral_mask_eq with identical geometry
+        // (n_fft, hop, n_bands, gain range, frequency range), since the
+        // runtime SpectralMaskEq downstream is shared and only the
+        // controller ONNX is swapped on a class change.
         st->autoeq_metas.clear();
         st->autoeq_class_index.clear();
         st->autoeq_metas.reserve(st->tone_meta.auto_eq.class_order.size());
@@ -1861,8 +1801,7 @@ static bool entry_init(const char* /*plugin_path*/) {
             throw std::runtime_error("saturator sub-bundle has no dsp_blocks");
         }
         st->sat_rational = std::get<RationalAParams>(st->sat_meta.dsp_blocks[0].params);
-        // Per-class DSP-block payloads. Different classes may declare
-        // different kinds (parametric_eq_5band vs spectral_mask_eq).
+        // Per-class DSP-block payloads (all spectral_mask_eq).
         st->autoeq_dsp_per_class.clear();
         st->autoeq_dsp_per_class.reserve(st->autoeq_metas.size());
         for (const auto& m : st->autoeq_metas) {
