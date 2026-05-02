@@ -75,6 +75,9 @@ public:
         for (int n = 0; n < n_fft_; ++n) {
             window_[n] = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * n / n_fft_));
         }
+        window_sq_.assign(n_fft_, 0.0f);
+        vDSP_vmul(window_.data(), 1, window_.data(), 1, window_sq_.data(), 1,
+                  static_cast<vDSP_Length>(n_fft_));
 
         in_ring_.assign(n_fft_, 0.0f);
         out_ring_.assign(n_fft_ + hop_, 0.0f);
@@ -125,6 +128,7 @@ public:
         cep_time_.assign(n_fft_, 0.0f);
         h_mp_real_.assign(n_freq_, 1.0f);
         h_mp_imag_.assign(n_freq_, 0.0f);
+        vforce_scratch_.assign(n_fft_ / 2 - 1, 0.0f);
 
         // vDSP forward+inverse round-trip scale is 2*n_fft (Apple vDSP guide:
         // "divide by 2n to recover original values after inverse"). We apply
@@ -176,13 +180,17 @@ public:
         }
         // Refresh the smoother's alpha if the user moved the Speed knob.
         if (speed_tau_ms_ != speed_tau_cached_) recompute_alpha_();
-        // Step 1: per-bin gain in dB (linear band→bin mix).
+        // Step 1: per-bin gain in dB via vectorized band→bin accumulate.
+        vDSP_vclr(bin_db_buf_.data(), 1, static_cast<vDSP_Length>(n_freq_));
+        for (int b = 0; b < n_bands_; ++b) {
+            vDSP_vsma(band_to_bin_.data() + b * n_freq_, 1,
+                      &band_db[b],
+                      bin_db_buf_.data(), 1,
+                      bin_db_buf_.data(), 1,
+                      static_cast<vDSP_Length>(n_freq_));
+        }
         for (int k = 0; k < n_freq_; ++k) {
-            float sum = 0.0f;
-            for (int b = 0; b < n_bands_; ++b) {
-                sum += band_to_bin_[b * n_freq_ + k] * band_db[b];
-            }
-            bin_db_buf_[k] = (bin_norm_[k] > 1e-6f) ? (sum / bin_norm_[k]) : 0.0f;
+            bin_db_buf_[k] = (bin_norm_[k] > 1e-6f) ? (bin_db_buf_[k] / bin_norm_[k]) : 0.0f;
         }
         // Step 2: smooth across frequency in dB using the precomputed
         // 1/6-octave Gaussian kernel. Smooths band-edge interpolation wiggle
@@ -258,11 +266,13 @@ public:
 
 private:
     void run_frame_() {
-        // Copy ring (oldest first) into windowed_.
-        for (int n = 0; n < n_fft_; ++n) {
-            const int src = (in_fill_ + n) % n_fft_;
-            windowed_[n] = in_ring_[src] * window_[n];
-        }
+        // Copy ring (oldest first) into windowed_, vectorized via two-segment vmul.
+        const int tail = n_fft_ - in_fill_;
+        vDSP_vmul(in_ring_.data() + in_fill_, 1, window_.data(),       1,
+                  windowed_.data(),            1, static_cast<vDSP_Length>(tail));
+        if (in_fill_ > 0)
+            vDSP_vmul(in_ring_.data(), 1, window_.data() + tail, 1,
+                      windowed_.data() + tail, 1, static_cast<vDSP_Length>(in_fill_));
 
         // Pack real input into split form for vDSP.
         DSPSplitComplex split{split_real_.data(), split_imag_.data()};
@@ -288,13 +298,13 @@ private:
         const float ny_re      = split.imagp[0];
         split.realp[0] = dc_re * h_mp_real_[0];
         split.imagp[0] = ny_re * h_mp_real_[n_freq_ - 1];
-        for (int k = 1; k < n_fft_ / 2; ++k) {
-            const float xr = split.realp[k];
-            const float xi = split.imagp[k];
-            const float hr = h_mp_real_[k];
-            const float hi = h_mp_imag_[k];
-            split.realp[k] = xr * hr - xi * hi;
-            split.imagp[k] = xr * hi + xi * hr;
+        // Bins 1..N/2-1: complex multiply X * H_mp via vDSP_zvmul (in-place on X).
+        {
+            DSPSplitComplex h_off{h_mp_real_.data() + 1, h_mp_imag_.data() + 1};
+            DSPSplitComplex x_off{split.realp + 1, split.imagp + 1};
+            // conjugate flag: 1 = plain multiply (vDSP convention), -1 = conj(A)*B
+            vDSP_zvmul(&x_off, 1, &h_off, 1, &x_off, 1,
+                       static_cast<vDSP_Length>(n_fft_ / 2 - 1), 1);
         }
 
         // Inverse FFT.
@@ -305,14 +315,25 @@ private:
                   reinterpret_cast<DSPComplex*>(time_out_.data()), 2,
                   n_fft_ / 2);
 
-        // Hann²-OLA: accumulate audio (scaled by 1/(2N)) and window² into
-        // parallel rings. Per-sample division in process() normalises away the
-        // varying Hann² COLA sum (0.5–1.0 for hop=N/2), mirroring torch.istft.
+        // Hann²-OLA: reuse windowed_ (forward FFT has consumed it) as scratch for
+        // time_out_ * window_ * ola_scale_, then accumulate into the ring via two
+        // contiguous segments to avoid per-sample modulo.
+        vDSP_vmul(time_out_.data(), 1, window_.data(), 1,
+                  windowed_.data(), 1, static_cast<vDSP_Length>(n_fft_));
+        vDSP_vsmul(windowed_.data(), 1, &ola_scale_,
+                   windowed_.data(), 1, static_cast<vDSP_Length>(n_fft_));
         const int ring_sz = static_cast<int>(out_ring_.size());
-        for (int n = 0; n < n_fft_; ++n) {
-            const int idx = (out_write_ + n) % ring_sz;
-            out_ring_[idx]  += time_out_[n] * window_[n] * ola_scale_;
-            norm_ring_[idx] += window_[n] * window_[n];
+        const int seg1    = std::min(n_fft_, ring_sz - out_write_);
+        const int seg2    = n_fft_ - seg1;
+        vDSP_vadd(windowed_.data(),        1, out_ring_.data()  + out_write_, 1,
+                  out_ring_.data()  + out_write_, 1, static_cast<vDSP_Length>(seg1));
+        vDSP_vadd(window_sq_.data(),       1, norm_ring_.data() + out_write_, 1,
+                  norm_ring_.data() + out_write_, 1, static_cast<vDSP_Length>(seg1));
+        if (seg2 > 0) {
+            vDSP_vadd(windowed_.data()  + seg1, 1, out_ring_.data(),  1,
+                      out_ring_.data(),  1, static_cast<vDSP_Length>(seg2));
+            vDSP_vadd(window_sq_.data() + seg1, 1, norm_ring_.data(), 1,
+                      norm_ring_.data(), 1, static_cast<vDSP_Length>(seg2));
         }
         out_write_ = (out_write_ + hop_) % ring_sz;
         out_avail_ += hop_;
@@ -373,12 +394,16 @@ private:
         h_mp_imag_[0]            = 0.0f;
         h_mp_real_[n_freq_ - 1]  = std::exp(cep_split.imagp[0]);  // Nyquist
         h_mp_imag_[n_freq_ - 1]  = 0.0f;
-        for (int k = 1; k < n_fft_ / 2; ++k) {
-            const float lr = cep_split.realp[k];
-            const float li = cep_split.imagp[k];
-            const float em = std::exp(lr);
-            h_mp_real_[k] = em * std::cos(li);
-            h_mp_imag_[k] = em * std::sin(li);
+        // Bins 1..N/2-1: vectorized via vForce (SIMD exp/cos/sin over 2048 elements).
+        {
+            const int vf_n = n_fft_ / 2 - 1;
+            vvexpf(vforce_scratch_.data(), cep_split.realp + 1, &vf_n);   // scratch = exp(lr)
+            vvcosf(h_mp_real_.data() + 1,  cep_split.imagp + 1, &vf_n);  // real    = cos(li)
+            vvsinf(h_mp_imag_.data() + 1,  cep_split.imagp + 1, &vf_n);  // imag    = sin(li)
+            vDSP_vmul(h_mp_real_.data() + 1, 1, vforce_scratch_.data(), 1,
+                      h_mp_real_.data() + 1, 1, static_cast<vDSP_Length>(vf_n));
+            vDSP_vmul(h_mp_imag_.data() + 1, 1, vforce_scratch_.data(), 1,
+                      h_mp_imag_.data() + 1, 1, static_cast<vDSP_Length>(vf_n));
         }
     }
 
@@ -518,6 +543,7 @@ private:
     std::vector<float> split_real_;
     std::vector<float> split_imag_;
     std::vector<float> time_out_;
+    std::vector<float> window_sq_;    // Hann², precomputed; used by OLA norm accumulate
 
     // Minimum-phase reconstruction scratch + output complex filter.
     std::vector<float> cep_split_real_;
@@ -525,6 +551,7 @@ private:
     std::vector<float> cep_time_;     // real cepstrum (length n_fft)
     std::vector<float> h_mp_real_;    // [n_freq] complex H_mp
     std::vector<float> h_mp_imag_;
+    std::vector<float> vforce_scratch_;  // [n_fft/2-1] temp for vForce exp in min-phase
 
     float ola_scale_{1.0f};
 };
