@@ -88,3 +88,44 @@ configure_file(
     ${CMAKE_BINARY_DIR}/build_config.sh
     @ONLY
 )
+
+# -----------------------------------------------------------------------------
+# tone_bench — headless CLAP host for benchmarking the composite plugin.
+# Optional: only built if libsndfile is found (homebrew: `brew install libsndfile`).
+# -----------------------------------------------------------------------------
+find_package(PkgConfig QUIET)
+set(_have_sndfile 0)
+if(PkgConfig_FOUND)
+    pkg_check_modules(SNDFILE QUIET sndfile)
+    if(SNDFILE_FOUND)
+        set(_have_sndfile 1)
+    endif()
+endif()
+if(NOT _have_sndfile)
+    foreach(_p /opt/homebrew /usr/local)
+        if(EXISTS "${_p}/include/sndfile.h"
+           AND (EXISTS "${_p}/lib/libsndfile.dylib" OR EXISTS "${_p}/lib/libsndfile.a"))
+            set(SNDFILE_INCLUDE_DIRS "${_p}/include")
+            set(SNDFILE_LIBRARY_DIRS "${_p}/lib")
+            set(SNDFILE_LIBRARIES sndfile)
+            set(_have_sndfile 1)
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(_have_sndfile)
+    add_executable(tone_bench bench/tone_bench.cpp)
+    target_include_directories(tone_bench PRIVATE
+        ${CLAP_INCLUDE_DIR}
+        ${SNDFILE_INCLUDE_DIRS}
+    )
+    target_link_directories(tone_bench PRIVATE ${SNDFILE_LIBRARY_DIRS})
+    target_link_libraries(tone_bench PRIVATE
+        ${SNDFILE_LIBRARIES}
+        "-framework CoreFoundation"
+    )
+    message(STATUS "tone_bench: enabled (sndfile in ${SNDFILE_INCLUDE_DIRS})")
+else()
+    message(STATUS "tone_bench: SKIPPED (libsndfile not found; brew install libsndfile)")
+endif()
