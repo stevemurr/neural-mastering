@@ -24,7 +24,7 @@ OrtSession::OrtSession(Ort::Env& env, const std::string& model_path, const Plugi
     session_opts_.SetIntraOpNumThreads(1);
     session_opts_.SetInterOpNumThreads(1);
     session_opts_.SetExecutionMode(ORT_SEQUENTIAL);
-    session_opts_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+    session_opts_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
     session_opts_.EnableMemPattern();
     session_opts_.EnableCpuMemArena();
 

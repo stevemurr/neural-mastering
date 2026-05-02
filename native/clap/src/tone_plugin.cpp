@@ -372,7 +372,7 @@ public:
         opts.SetIntraOpNumThreads(1);
         opts.SetInterOpNumThreads(1);
         opts.SetExecutionMode(ORT_SEQUENTIAL);
-        opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+        opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(), opts);
         for (const auto& nm : meta.input_names)  in_names_owned_.push_back(nm);
         for (const auto& nm : meta.output_names) out_names_owned_.push_back(nm);
