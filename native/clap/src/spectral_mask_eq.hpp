@@ -12,7 +12,12 @@
 //     every `hop` accumulated samples we run an FFT frame, apply the per-band
 //     gain mask (set via set_params), inverse-FFT, window, and OLA into an
 //     output ring.
-//   - process() pulls `n` samples of finished output. Latency = n_fft - hop.
+//   - process() pulls `n` samples of finished output.
+//   - Latency = n_fft (NOT n_fft - hop). Minimum-phase filter is causal so
+//     the first meaningful OLA output sits at ring position `hop`, consumed
+//     at system output sample 2*hop-1 ≈ n_fft. A zero-phase filter would
+//     pre-ring into the leading zeros (latency = n_fft - hop), but
+//     minimum-phase has no pre-ring and the extra hop samples must be reported.
 //
 // Pure DSP — no CLAP / ORT / std::variant deps so it can be unit-tested
 // standalone.
@@ -247,7 +252,7 @@ public:
         }
     }
 
-    int latency_samples() const { return n_fft_ - hop_; }
+    int latency_samples() const { return n_fft_; }
     int block_size() const { return cfg_.block_size; }
     int num_control_params() const { return cfg_.num_control_params; }
 

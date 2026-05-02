@@ -21,6 +21,7 @@
 //   - refuses activation if host sample rate != composite_meta.sample_rate
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <array>
 #include <cmath>
@@ -664,6 +665,14 @@ struct Plugin {
     // CLAP GUI handle (main thread only).
     ToneGUIState* gui_state{nullptr};
 
+    // Dynamic latency tracking.
+    // current_latency is written by the audio thread and read by latency_get
+    // (main thread). latency_needs_notify is set by the audio thread and
+    // cleared by on_main_thread after calling host_latency_ext->changed().
+    std::atomic<uint32_t>           current_latency{0};
+    std::atomic<bool>               latency_needs_notify{false};
+    const clap_host_latency_t*      host_latency_ext{nullptr};
+
     // Spectrum analyzer (audio thread accumulates, main thread computes + renders).
     SpectrumAnalyzer spectrum;
 
@@ -778,10 +787,48 @@ static const clap_plugin_params_t s_ext_params = {
 // CLAP extension: latency
 // ---------------------------------------------------------------------------
 
+// Computes the true end-to-end latency for the current parameter state.
+// Called from the audio thread (after param drain) and from activate.
+// Sources:
+//   kBlockSize          — input accumulator always present
+//   SpectralMaskEq      — n_fft - hop, only when EQ wet > 0 and class is spectral
+//   SSL bus comp        — kSslHop - kBlockSize, only when SSC > 0 and loaded
+//   TruePeakCeiling     — lookahead, always present once activated
+static uint32_t compute_latency_(const Plugin& plug) {
+    if (plug.chains.empty() || !g_state) return 0;
+
+    uint32_t lat = kBlockSize;
+    lat += static_cast<uint32_t>(plug.chains[0].ceiling.latency_samples());
+
+    float eq_wet = 0.f, ssc_wet = 0.f;
+    int   cls_idx = 0;
+    for (size_t i = 0; i < plug.meta->controls.size(); ++i) {
+        const auto& c = plug.meta->controls[i];
+        const float v = plug.control_values[i];
+        if      (c.id == "EQ")  eq_wet  = v;
+        else if (c.id == "SSC") ssc_wet = v;
+        else if (c.id == "CLS") cls_idx = static_cast<int>(std::lround(v));
+    }
+
+    if (eq_wet > 0.f && !g_state->autoeq_dsp_per_class.empty()) {
+        const int n_cls = static_cast<int>(g_state->autoeq_dsp_per_class.size());
+        cls_idx = std::clamp(cls_idx, 0, n_cls - 1);
+        if (g_state->autoeq_dsp_per_class[cls_idx].kind == "spectral_mask_eq") {
+            const auto& sp = std::get<SpectralMaskEqParams>(
+                g_state->autoeq_dsp_per_class[cls_idx].params);
+            lat += static_cast<uint32_t>(sp.n_fft);
+        }
+    }
+
+    if (g_state->ssl_comp_loaded && ssc_wet > 0.f)
+        lat += static_cast<uint32_t>(kSslHop - kBlockSize);
+
+    return lat;
+}
+
 static uint32_t latency_get(const clap_plugin_t* p) {
     auto* plug = static_cast<Plugin*>(p->plugin_data);
-    if (plug->chains.empty()) return 0;
-    return static_cast<uint32_t>(plug->chains[0].ceiling.latency_samples());
+    return plug->current_latency.load(std::memory_order_relaxed);
 }
 
 static const clap_plugin_latency_t s_ext_latency = {latency_get};
@@ -853,6 +900,8 @@ static bool plugin_init(const clap_plugin_t* p) {
     plug->control_values.resize(plug->meta->controls.size());
     for (size_t i = 0; i < plug->meta->controls.size(); ++i)
         plug->control_values[i] = plug->meta->controls[i].def;
+    plug->host_latency_ext = static_cast<const clap_host_latency_t*>(
+        plug->host->get_extension(plug->host, CLAP_EXT_LATENCY));
     return true;
 }
 static void plugin_destroy(const clap_plugin_t* p) {
@@ -984,6 +1033,7 @@ static bool plugin_activate(const clap_plugin_t* p, double sample_rate,
 
     plug->spectrum.init();
 
+    plug->current_latency.store(compute_latency_(*plug), std::memory_order_relaxed);
     plug->activated = true;
     return true;
 }
@@ -1500,6 +1550,16 @@ static clap_process_status plugin_process(const clap_plugin_t* p, const clap_pro
         }
     }
 
+    // Recompute latency after any param updates; notify host on change.
+    {
+        const uint32_t new_lat = compute_latency_(*plug);
+        if (new_lat != plug->current_latency.load(std::memory_order_relaxed)) {
+            plug->current_latency.store(new_lat, std::memory_order_relaxed);
+            plug->latency_needs_notify.store(true, std::memory_order_relaxed);
+            plug->host->request_callback(plug->host);
+        }
+    }
+
     const uint32_t n_frames = process->frames_count;
     if (n_frames == 0) return CLAP_PROCESS_CONTINUE;
     if (process->audio_inputs_count == 0 || process->audio_outputs_count == 0)
@@ -1699,6 +1759,12 @@ static const void* plugin_get_extension(const clap_plugin_t*, const char* id) {
 
 static void plugin_on_main_thread(const clap_plugin_t* p) {
     auto* plug = static_cast<Plugin*>(p->plugin_data);
+
+    if (plug->latency_needs_notify.exchange(false, std::memory_order_relaxed)) {
+        if (plug->host_latency_ext && plug->host_latency_ext->changed)
+            plug->host_latency_ext->changed(plug->host);
+    }
+
     if (!plug->gui_state) return;
     if (plug->spectrum.process_if_ready(plug->sample_rate)) {
         const std::string js = plug->spectrum.build_js(plug->processor_order);
